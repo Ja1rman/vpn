@@ -108,6 +108,17 @@ def hydrate():
             mask_values(value)
             if name.endswith('_JSON'):
                 mask_values(secret_json(name))
+            elif name == 'VPN_ALERTMANAGER_CONFIG':
+                # The generated YAML quotes scalars as JSON. Mask SMTP secrets
+                # individually too, rather than only their complete YAML line.
+                for line in value.splitlines():
+                    match = re.match(r'\s*(?:smtp_)?auth_(?:password|secret):\s*(.+)', line)
+                    if match:
+                        raw = match.group(1)
+                        try:
+                            mask_values(json.loads(raw))
+                        except ValueError:
+                            mask_values(raw.strip("\"'"))
     inv, hosts = inventory()
     passwords = secret_json('VPN_SSH_PASSWORDS_JSON')
     outbounds = secret_json('VPN_OUTBOUNDS_JSON')

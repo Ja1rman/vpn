@@ -78,6 +78,11 @@ def main():
     out=ROOT/'.local/rendered'
     out.mkdir(parents=True,exist_ok=True)
     shutil.copytree(ROOT/'monitoring',out/'monitoring',dirs_exist_ok=True)
+    private_alertmanager=ROOT/'.local/alertmanager.yml'
+    if private_alertmanager.exists():
+        alertmanager=out/'monitoring/alertmanager/alertmanager.yml'
+        shutil.copyfile(private_alertmanager,alertmanager)
+        alertmanager.chmod(0o600)
     compose=out/'monitoring/compose.yml'
     compose.write_text(compose.read_text().replace('212.22.70.156',inv['entry']['address']))
     write_json(out/'balancer/config.json', build_balancer(inv))

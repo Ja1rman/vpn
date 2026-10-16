@@ -6,7 +6,14 @@ docker compose version
 install -d -m 755 /etc/vpn-monitoring
 cp -R "$stage/." /etc/vpn-monitoring/
 find /etc/vpn-monitoring -type d -exec chmod 755 {} +
-find /etc/vpn-monitoring -type f -exec chmod 644 {} +
+find /etc/vpn-monitoring -type f \
+  ! -path /etc/vpn-monitoring/alertmanager/alertmanager.yml \
+  ! -path /etc/vpn-monitoring/tls/client.key \
+  ! -path /etc/vpn-monitoring/grafana/admin-password \
+  ! -path /etc/vpn-monitoring/grafana/admin-user \
+  -exec chmod 644 {} +
+chown root:65534 /etc/vpn-monitoring/alertmanager/alertmanager.yml
+chmod 640 /etc/vpn-monitoring/alertmanager/alertmanager.yml
 chown root:65534 /etc/vpn-monitoring/tls/client.key
 chmod 640 /etc/vpn-monitoring/tls/client.key
 chown root:472 /etc/vpn-monitoring/grafana/admin-password

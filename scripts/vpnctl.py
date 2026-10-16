@@ -66,6 +66,11 @@ def refresh_grafana():
     remote(name,'sudo python3 '+shlex.join([stage+'/rename_grafana_user.py',stage+'/payload']))
     remote(name,'sudo bash '+shlex.join([stage+'/refresh_grafana.sh',stage+'/payload']))
 
+def refresh_alertmanager():
+    name=inventory()['entry']['name']
+    stage=upload(name,ROOT/'.local/rendered/monitoring/alertmanager',['refresh_alertmanager.py'])
+    remote(name,'sudo python3 '+shlex.join([stage+'/refresh_alertmanager.py',stage+'/payload/alertmanager.yml']))
+
 def deploy_balancer():
     name=inventory()['entry']['name']
     stage=upload(name,ROOT/'.local/rendered/balancer',['install_balancer.sh'])
@@ -91,13 +96,14 @@ def update_pool():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','refresh-alertmanager','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
     elif args.command=='deploy-node':deploy_node(args.name)
     elif args.command=='deploy-monitoring':deploy_monitoring()
     elif args.command=='refresh-grafana':refresh_grafana()
+    elif args.command=='refresh-alertmanager':refresh_alertmanager()
     elif args.command=='deploy-balancer':deploy_balancer()
     elif args.command=='activate-balancer':activate_balancer()
     elif args.command=='migrate-direct-inbounds':migrate_direct_inbounds()

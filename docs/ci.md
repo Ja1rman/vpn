@@ -22,7 +22,7 @@
 | `VPN_OUTBOUNDS_JSON` | JSON: путь outbound из inventory → полный клиентский outbound Xray |
 | `VPN_MONITORING_PASSWORD` | Действующий пароль Grafana/HTTP Basic Auth, не короче 24 символов |
 | `VPN_MONITORING_TLS_JSON` | CA **сертификат**, клиентская и серверные пары сертификат/ключ для Node Exporter |
-| `VPN_ALERTMANAGER_CONFIG` | Необязательно: полный private YAML Alertmanager с SMTP. При отсутствии используется tracked `web-only` |
+| `VPN_ALERTMANAGER_CONFIG` | Private YAML Alertmanager с настроенной почтовой доставкой. При отсутствии используется tracked `web-only` |
 
 Workflow передаёт Secrets в окружение шага deploy; `ci_environment.py` создаёт из них файлы с правами `600` в закрытой `.local/`. JSON-секреты и вложенные строковые значения добавляются в маскирование логов. Секреты не передаются аргументами CLI, не публикуются в artifacts/cache; `.local/` удаляется в завершающем шаге даже при ошибке.
 
@@ -76,7 +76,7 @@ python3 scripts/sync_github_secrets.py --repo Ja1rman/vpn
 
 Скрипт читает текущие файлы `.local/ssh`, `.local/outbounds`, `.local/access.json` и leaf-пары `.local/pki`; общий plaintext-архив не создаёт. GitHub CLI шифрует значения перед отправкой в API. Он создаёт Environment `production` с доступом к развёртыванию только из ветки `main`, обновляет пять обязательных Secrets и логин, затем всегда оставляет `VPN_DEPLOY_ENABLED=false`. После синхронизации для будущего deploy снова включите переменную явно.
 
-Если существует `.local/alertmanager.yml`, его содержимое тоже сохраняется в `VPN_ALERTMANAGER_CONFIG`. Если файла нет, существующий optional Secret не удаляется. Для отключения ранее настроенной почты удалите optional Secret отдельно или загрузите согласованный web-only YAML. Сейчас SMTP не настроен.
+Если существует `.local/alertmanager.yml`, его содержимое тоже сохраняется в `VPN_ALERTMANAGER_CONFIG`. Если файла нет, существующий Secret не удаляется. Почта настроена; для её отключения удалите Secret отдельно или загрузите согласованный web-only YAML. После смены получателей/SMTP используйте `configure_email.py --apply --publish-secret`; подробности — [почтовые уведомления](email.md).
 
 ## Ручной запуск после восстановления лимитов
 

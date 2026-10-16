@@ -90,7 +90,7 @@ def migrate_direct_inbounds():
 
 def update_pool():
     name=inventory()['entry']['name']
-    stage=upload(name,ROOT/'.local/rendered/balancer',['update_pool.py'])
+    stage=upload(name,ROOT/'.local/rendered/balancer',['update_pool.py','verify_vpn.py'])
     remote(name,'sudo python3 '+shlex.join([stage+'/update_pool.py',stage+'/payload/config.json']))
 
 def main():

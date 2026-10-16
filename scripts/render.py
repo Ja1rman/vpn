@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import subprocess
+from priority_pool import build_priority_chain
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,18 +19,24 @@ def write_json(path, value):
 def build_balancer(inventory):
     outbounds = []
     for node in inventory["nodes"]:
+        overrides = node.get('outbound_tags', {})
+        if not isinstance(overrides, dict) or set(overrides) - set(node['outbounds']):
+            raise ValueError('outbound_tags must reference files of its own node')
         for index, filename in enumerate(node["outbounds"]):
             outbound = json.loads((ROOT / filename).read_text())
             if outbound.get("protocol") not in {"vless", "hysteria", "trojan", "shadowsocks", "vmess"}:
                 raise ValueError("Only encrypted remote proxies may enter the VPN pool")
-            outbound["tag"] = f"pool-{node['name']}-{index}"
+            tag = overrides.get(filename, f"pool-{node['name']}-{index}")
+            if not isinstance(tag, str) or not re.fullmatch(r'pool-[a-zA-Z0-9_-]+', tag):
+                raise ValueError('Invalid stable pool outbound tag')
+            outbound["tag"] = tag
             outbounds.append(outbound)
     if not outbounds:
         raise ValueError("At least one exit must be configured")
     settings = inventory["balancer"]
-    if settings["strategy"] not in {"roundRobin", "leastPing"}:
-        raise ValueError("strategy must be roundRobin or leastPing")
-    return {
+    if settings["strategy"] not in {"priority", "roundRobin", "leastPing"}:
+        raise ValueError("strategy must be priority, roundRobin or leastPing")
+    config = {
         "log": {"loglevel": "warning"},
         "inbounds": [
             {"tag": "pool-socks", "listen": "127.0.0.1", "port": settings["socks_port"], "protocol": "socks", "settings": {"auth": "noauth", "udp": True}},
@@ -50,6 +57,18 @@ def build_balancer(inventory):
         },
         "observatory": {"subjectSelector": ["pool-"], "probeUrl": settings["probe_url"], "probeInterval": settings["probe_interval"], "enableConcurrency": True}
     }
+    if settings['strategy'] == 'priority':
+        tags = [o['tag'] for o in outbounds]
+        preferred = settings.get('priority_order', [])
+        if not isinstance(preferred, list) or any(not isinstance(tag, str) for tag in preferred) or \
+                len(set(preferred)) != len(preferred) or any(tag not in tags for tag in preferred):
+            raise ValueError('priority_order must contain unique, existing outbound tags')
+        order = preferred + [tag for tag in tags if tag not in preferred]
+        bridges, rules, balancers = build_priority_chain(order)
+        config['outbounds'].extend(bridges)
+        config['routing']['rules'].extend(rules)
+        config['routing']['balancers'] = balancers
+    return config
 
 def prometheus_config(inv):
     base = {"global": {"scrape_interval": "15s", "evaluation_interval": "15s", "external_labels": {"cluster": "vpn"}},

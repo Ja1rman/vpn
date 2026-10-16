@@ -12,8 +12,39 @@ import render
 from activate_balancer import change_template
 from migrate_direct_inbounds import add_routes, TARGETS
 import migrate_direct_inbounds as migration
+from priority_pool import build_priority_chain
 
 class SafetyInvariants(unittest.TestCase):
+    def test_priority_can_change_without_changing_outbound_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(render,'ROOT',Path(tmp)):
+                for name in ['a','b']:
+                    (render.ROOT/(name+'.json')).write_text(json.dumps({'protocol':'vless','settings':{'address':'203.0.113.1','id':name}}))
+                inv={'nodes':[{'name':'first','outbounds':['a.json','b.json']}],
+                     'balancer':{'strategy':'priority','socks_port':11090,'api_port':11091,'probe_interval':'10s','probe_url':'https://example.com/'}}
+                old=render.build_balancer(inv)
+                inv['balancer']['priority_order']=['pool-first-1']
+                new=render.build_balancer(inv)
+                self.assertEqual(new['outbounds'],old['outbounds'])
+                self.assertEqual([b['selector'] for b in new['routing']['balancers']],[['pool-first-1'],['pool-first-0']])
+                inv['balancer']['priority_order']=['unknown']
+                with self.assertRaises(ValueError):render.build_balancer(inv)
+                inv['balancer']['priority_order']=[]
+                inv['nodes'][0]['outbound_tags']={'b.json':'pool-first-backup-v2'}
+                staged=render.build_balancer(inv)
+                self.assertEqual(staged['outbounds'][1],old['outbounds'][1])
+                self.assertEqual(staged['outbounds'][2]['tag'],'pool-first-backup-v2')
+
+    def test_priority_chain_cannot_rotate_or_bypass_failed_exits(self):
+        bridges,rules,balancers=build_priority_chain(['pool-first-0','pool-first-1','pool-second-0'])
+        self.assertEqual([b['selector'] for b in balancers],[['pool-first-0'],['pool-first-1'],['pool-second-0']])
+        self.assertEqual([b['fallbackTag'] for b in balancers],['failover-hop-1','failover-hop-2','blocked'])
+        self.assertEqual([b['protocol'] for b in bridges],['loopback','loopback'])
+        for bridge,rule,balancer in zip(bridges,rules,balancers[1:]):
+            self.assertEqual(bridge['settings']['inboundTag'],rule['inboundTag'][0])
+            self.assertEqual(rule['balancerTag'],balancer['tag'])
+        with self.assertRaises(ValueError):build_priority_chain(['pool-x-1','pool-x-10'])
+
     def test_template_save_refuses_concurrent_panel_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'test.db'

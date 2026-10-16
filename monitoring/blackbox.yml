@@ -1,0 +1,14 @@
+modules:
+  http_vpn:
+    prober: http
+    timeout: 15s
+    http:
+      method: GET
+      valid_status_codes: [204]
+      proxy_url: socks5://127.0.0.1:11090
+      preferred_ip_protocol: ip4
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4

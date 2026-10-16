@@ -1,0 +1,103 @@
+name: vpn-monitoring
+services:
+  prometheus:
+    image: prom/prometheus:v3.13.4@sha256:87861b8cf91579109319ebc300f3f1060e6da9c05d6ae8ad15a20c879e84e32e
+    network_mode: host
+    restart: unless-stopped
+    user: '65534:65534'
+    command:
+      - --config.file=/etc/vpn-monitoring/prometheus/prometheus.yml
+      - --web.listen-address=127.0.0.1:9090
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=1GB
+      - --web.external-url=http://212.22.70.156/prometheus/
+      - --web.route-prefix=/
+    volumes:
+      - /etc/vpn-monitoring:/etc/vpn-monitoring:ro
+      - prometheus-data:/prometheus
+    mem_limit: 512m
+    cpus: 0.5
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  alertmanager:
+    image: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
+    network_mode: host
+    restart: unless-stopped
+    user: '65534:65534'
+    command:
+      - --config.file=/etc/vpn-monitoring/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=127.0.0.1:9093
+      - --cluster.listen-address=
+      - --web.external-url=http://212.22.70.156/alerts/
+      - --web.route-prefix=/
+    volumes:
+      - /etc/vpn-monitoring:/etc/vpn-monitoring:ro
+      - alertmanager-data:/alertmanager
+    mem_limit: 128m
+    cpus: 0.25
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  blackbox:
+    image: prom/blackbox-exporter:v0.29.0@sha256:9613f2884689b6fad9f1939f6a3b0388c93a022cfaededb19545b329b5c83dea
+    network_mode: host
+    restart: unless-stopped
+    user: '65534:65534'
+    command:
+      - --config.file=/etc/vpn-monitoring/blackbox.yml
+      - --web.listen-address=127.0.0.1:9115
+    volumes:
+      - /etc/vpn-monitoring:/etc/vpn-monitoring:ro
+    mem_limit: 96m
+    cpus: 0.25
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  grafana:
+    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
+    user: '472:472'
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: '3000'
+      GF_PATHS_PROVISIONING: /etc/vpn-monitoring/grafana/provisioning
+      GF_SERVER_ROOT_URL: http://212.22.70.156/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: 'true'
+      GF_SECURITY_ADMIN_USER__FILE: /etc/vpn-monitoring/grafana/admin-user
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /etc/vpn-monitoring/grafana/admin-password
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+    volumes:
+      - /etc/vpn-monitoring:/etc/vpn-monitoring:ro
+      - grafana-data:/var/lib/grafana
+    tmpfs: [/tmp]
+    mem_limit: 384m
+    cpus: 0.5
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  web:
+    image: nginx:1.30.6-alpine@sha256:970364228b1e4f932abc22d321932816782cca8a20b85a77552a7cfe9acfb3b5
+    network_mode: host
+    restart: unless-stopped
+    entrypoint: [nginx, -g, 'daemon off;']
+    volumes:
+      - /etc/vpn-monitoring/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/vpn-monitoring/monitoring.htpasswd:/etc/nginx/monitoring.htpasswd:ro
+    tmpfs: [/tmp]
+    mem_limit: 64m
+    cpus: 0.25
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN]
+    security_opt: [no-new-privileges:true]
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

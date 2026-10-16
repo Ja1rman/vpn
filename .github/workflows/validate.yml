@@ -1,0 +1,22 @@
+name: Validate infrastructure configuration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Python safety checks
+        run: python3 -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: for script in scripts/*.sh; do bash -n "$script"; done
+      - name: Prometheus rules and transitions
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work/tests
+          --entrypoint /bin/promtool
+          prom/prometheus:v3.13.4@sha256:87861b8cf91579109319ebc300f3f1060e6da9c05d6ae8ad15a20c879e84e32e
+          test rules alerts.test.yml

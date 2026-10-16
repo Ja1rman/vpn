@@ -1,0 +1,48 @@
+rule_files:
+  - ../monitoring/prometheus/alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: unavailable-targets
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",host="exit-a",instance="exit-a:19100"}'
+        values: '0x3'
+      - series: 'probe_success{job="vpn-egress",host="entry",instance="probe"}'
+        values: '0x3'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: NodeUnavailable
+        exp_alerts:
+          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:19100', severity: critical}
+            exp_annotations:
+              summary: 'Сервер exit-a: метрики недоступны'
+              description: 'Node Exporter не отвечает более двух минут; проверьте сервер, сеть и exporter.'
+      - eval_time: 2m
+        alertname: VpnEgressUnavailable
+        exp_alerts:
+          - exp_labels: {job: vpn-egress, host: entry, instance: probe, severity: critical}
+            exp_annotations:
+              summary: 'VPN: нет доступа в интернет через пул выходных узлов'
+              description: 'Проверка HTTP через SOCKS балансировщика не проходит больше минуты.'
+  - name: high-network-and-healthy-target
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",host="exit-a",instance="exit-a:19100"}'
+        values: '1x20'
+      - series: 'node_network_receive_bytes_total{job="node",host="exit-a",instance="exit-a:19100",device="eth0"}'
+        values: '0+600000000x20'
+      - series: 'node_network_transmit_bytes_total{job="node",host="exit-a",instance="exit-a:19100",device="eth0"}'
+        values: '0+600000000x20'
+      - series: 'vpn_network_capacity_bits{job="node",host="exit-a",instance="exit-a:19100",device="eth0"}'
+        values: '100000000x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NodeUnavailable
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: HighNetworkTraffic
+        exp_alerts:
+          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:19100', device: eth0, severity: warning}
+            exp_annotations:
+              summary: 'Высокий сетевой трафик: exit-a / eth0'
+              description: 'Сумма RX+TX выше 85% заданного бюджета канала в течение 10 минут. Для full duplex бюджет задаётся как допустимая сумма направлений.'

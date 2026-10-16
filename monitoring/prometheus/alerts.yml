@@ -1,0 +1,80 @@
+groups:
+  - name: vpn-infrastructure
+    rules:
+      - alert: VpnEgressUnavailable
+        expr: probe_success{job="vpn-egress"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'VPN: нет доступа в интернет через пул выходных узлов'
+          description: 'Проверка HTTP через SOCKS балансировщика не проходит больше минуты.'
+      - alert: NodeUnavailable
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Сервер {{ $labels.host }}: метрики недоступны'
+          description: 'Node Exporter не отвечает более двух минут; проверьте сервер, сеть и exporter.'
+      - alert: VpnPortUnavailable
+        expr: probe_success{job="vpn-tcp"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'VPN {{ $labels.host }}: порт недоступен'
+          description: 'TCP-проверка {{ $labels.instance }} не проходит более минуты.'
+      - alert: HighCPU
+        expr: 100 * (1 - avg by (host, instance) (rate(node_cpu_seconds_total{job="node",mode="idle"}[5m]))) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Высокая загрузка CPU: {{ $labels.host }}'
+          description: 'CPU выше 85% в течение 10 минут: {{ $value | printf "%.1f" }}%.'
+      - alert: HighMemory
+        expr: 100 * (1 - node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"}) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Мало свободной памяти: {{ $labels.host }}'
+          description: 'Используется более 90% RAM в течение 10 минут.'
+      - alert: DiskSpaceLow
+        expr: 100 * node_filesystem_avail_bytes{job="node",fstype!~"tmpfs|overlay|squashfs|nsfs",mountpoint="/"} / node_filesystem_size_bytes{job="node",fstype!~"tmpfs|overlay|squashfs|nsfs",mountpoint="/"} < 15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Мало места на диске: {{ $labels.host }}'
+          description: 'На корневой файловой системе доступно менее 15%.'
+      - alert: HighNetworkTraffic
+        expr: (8 * (rate(node_network_receive_bytes_total{job="node"}[5m]) + rate(node_network_transmit_bytes_total{job="node"}[5m]))) / on(host, device) group_left() vpn_network_capacity_bits > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Высокий сетевой трафик: {{ $labels.host }} / {{ $labels.device }}'
+          description: 'Сумма RX+TX выше 85% заданного бюджета канала в течение 10 минут. Для full duplex бюджет задаётся как допустимая сумма направлений.'
+      - alert: MonitoringComponentUnavailable
+        expr: up{job=~"prometheus|alertmanager|blackbox"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Недоступен компонент мониторинга: {{ $labels.job }}'
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Prometheus не смог перечитать конфигурацию'
+      - alert: AlertDeliveryFailed
+        expr: rate(alertmanager_notifications_failed_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Alertmanager: ошибка доставки уведомлений'

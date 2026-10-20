@@ -1,10 +1,54 @@
 {
-  "entry": {"name": "entry", "address": "212.22.70.156", "user": "marat", "interface": "eth0", "network_budget_mbps": 1000},
+  "entry": {
+    "name": "entry",
+    "address": "212.22.70.156",
+    "user": "marat",
+    "interface": "eth0",
+    "network_budget_mbps": 1000,
+    "vpn_probe_ports": [
+      33172,
+      33173,
+      58663
+    ]
+  },
   "nodes": [
-    {"name": "breeze-reef", "address": "144.31.34.165", "user": "root", "interface": "eth0", "network_budget_mbps": 1000,
-     "outbounds": [".local/outbounds/breeze-reef-vless.json", ".local/outbounds/breeze-reef-hysteria.json"],
-     "outbound_tags": {".local/outbounds/breeze-reef-hysteria.json": "pool-breeze-reef-hysteria-v2"}}
+    {
+      "name": "breeze-reef",
+      "address": "144.31.34.165",
+      "user": "root",
+      "interface": "eth0",
+      "network_budget_mbps": 1000,
+      "outbounds": [
+        ".local/outbounds/breeze-reef-vless.json",
+        ".local/outbounds/breeze-reef-hysteria.json",
+        ".local/outbounds/breeze-reef-tcp.json"
+      ],
+      "outbound_tags": {
+        ".local/outbounds/breeze-reef-hysteria.json": "pool-breeze-reef-hysteria-v2",
+        ".local/outbounds/breeze-reef-tcp.json": "pool-breeze-reef-tcp-v1"
+      },
+      "vpn_probe_ports": [
+        443,
+        8443
+      ]
+    }
   ],
-  "balancer": {"strategy": "priority", "socks_port": 11090, "api_port": 11091, "probe_interval": "10s", "probe_url": "https://www.google.com/generate_204"},
-  "monitoring": {"node_port": 19100, "prometheus_port": 9090, "grafana_port": 3000, "alertmanager_port": 9093, "blackbox_port": 9115}
+  "balancer": {
+    "strategy": "priority",
+    "socks_port": 11090,
+    "api_port": 11091,
+    "probe_interval": "10s",
+    "probe_url": "https://www.google.com/generate_204",
+    "priority_order": [
+      "pool-breeze-reef-0",
+      "pool-breeze-reef-tcp-v1"
+    ]
+  },
+  "monitoring": {
+    "node_port": 19100,
+    "prometheus_port": 9090,
+    "grafana_port": 3000,
+    "alertmanager_port": 9093,
+    "blackbox_port": 9115
+  }
 }

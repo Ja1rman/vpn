@@ -93,10 +93,35 @@ def update_pool():
     stage=upload(name,ROOT/'.local/rendered/balancer',['update_pool.py','verify_vpn.py'])
     remote(name,'sudo python3 '+shlex.join([stage+'/update_pool.py',stage+'/payload/config.json']))
 
+def deploy_compatible():
+    from compatible_vless import VERSION, ARCHIVE_SHA256
+    import hashlib
+    import shutil
+    archive=ROOT/'.local/compatible-vless'/f'sing-box-{VERSION}-linux-amd64.tar.gz'
+    if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest()!=ARCHIVE_SHA256:
+        raise RuntimeError('Place the pinned official sing-box archive in .local/compatible-vless first')
+    folder=ROOT/'.local/rendered/compatible-vless-bootstrap'
+    folder.mkdir(parents=True,mode=0o700,exist_ok=True)
+    shutil.copyfile(archive,folder/archive.name)
+    stage=upload(inventory()['entry']['name'],folder,['compatible_vless.py'])
+    remote(inventory()['entry']['name'],'sudo python3 '+shlex.join([
+        stage+'/compatible_vless.py','install','--archive',stage+'/payload/'+archive.name]))
+
+def publish_compatible():
+    folder=ROOT/'.local/compatible-publication';folder.mkdir(mode=0o700,exist_ok=True)
+    stage=upload(inventory()['entry']['name'],folder,['compatible_profiles.py'])
+    remote(inventory()['entry']['name'],'sudo python3 '+shlex.join([
+        stage+'/compatible_profiles.py','publish','--address',inventory()['entry']['address']]))
+
+def refresh_probes():
+    stage=upload(inventory()['entry']['name'],ROOT/'.local/rendered/monitoring/prometheus',['refresh_probe_targets.py'])
+    remote(inventory()['entry']['name'],'sudo python3 '+shlex.join([
+        stage+'/refresh_probe_targets.py',stage+'/payload/vpn-targets.json']))
+
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','refresh-alertmanager','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','deploy-compatible','publish-compatible','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
@@ -108,6 +133,9 @@ def main():
     elif args.command=='activate-balancer':activate_balancer()
     elif args.command=='migrate-direct-inbounds':migrate_direct_inbounds()
     elif args.command=='update-pool':update_pool()
+    elif args.command=='deploy-compatible':deploy_compatible()
+    elif args.command=='publish-compatible':publish_compatible()
+    elif args.command=='refresh-probes':refresh_probes()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)
     elif args.command=='tunnel':
         cmd=ssh_args(inventory()['entry']['name'])

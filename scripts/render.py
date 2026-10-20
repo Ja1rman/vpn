@@ -80,8 +80,14 @@ def prometheus_config(inv):
     jobs.append({"job_name":"node", "scheme":"https", "tls_config":{"ca_file":"/etc/vpn-monitoring/tls/ca.crt","cert_file":"/etc/vpn-monitoring/tls/client.crt","key_file":"/etc/vpn-monitoring/tls/client.key"}, "file_sd_configs":[{"files":["/etc/vpn-monitoring/prometheus/nodes.json"]}]})
     targets=[{"targets":[f"127.0.0.1:{inv['monitoring']['node_port']}"],"labels":{"host":inv['entry']['name']}}]
     targets += [{"targets":[f"{n['address']}:{inv['monitoring']['node_port']}"],"labels":{"host":n['name']}} for n in inv['nodes']]
-    probes=[{"targets":["127.0.0.1:33172","127.0.0.1:58663", f"127.0.0.1:{inv['balancer']['socks_port']}"],"labels":{"host":"entry"}}]
-    probes += [{"targets":[f"{n['address']}:{n.get('vpn_port',443)}"],"labels":{"host":n['name']}} for n in inv['nodes']]
+    def probe_ports(host, default):
+        ports=host.get('vpn_probe_ports',default)
+        if not isinstance(ports,list) or not ports or any(type(p) is not int or not 1<=p<=65535 for p in ports):
+            raise ValueError('vpn_probe_ports must be a nonempty list of TCP ports')
+        return list(dict.fromkeys(ports))
+    entry_ports=probe_ports(inv['entry'],[33172,58663])+[inv['balancer']['socks_port']]
+    probes=[{"targets":[f"127.0.0.1:{p}" for p in dict.fromkeys(entry_ports)],"labels":{"host":"entry"}}]
+    probes += [{"targets":[f"{n['address']}:{p}" for p in probe_ports(n,[n.get('vpn_port',443)])],"labels":{"host":n['name']}} for n in inv['nodes']]
     jobs.append({"job_name":"vpn-tcp", "metrics_path":"/probe", "params":{"module":["tcp_connect"]}, "file_sd_configs":[{"files":["/etc/vpn-monitoring/prometheus/vpn-targets.json"]}], "relabel_configs":[{"source_labels":["__address__"],"target_label":"__param_target"},{"source_labels":["__param_target"],"target_label":"instance"},{"target_label":"__address__","replacement":"127.0.0.1:9115"}]})
     jobs.append({"job_name":"vpn-egress", "metrics_path":"/probe", "params":{"module":["http_vpn"]}, "static_configs":[{"targets":[inv['balancer']['probe_url']],"labels":{"host":"entry"}}], "relabel_configs":[{"source_labels":["__address__"],"target_label":"__param_target"},{"source_labels":["__param_target"],"target_label":"instance"},{"target_label":"__address__","replacement":"127.0.0.1:9115"}]})
     return base, targets, probes

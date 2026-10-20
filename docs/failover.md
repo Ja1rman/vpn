@@ -7,7 +7,9 @@
 1. Порядок хостов в `nodes`.
 2. Порядок транспортов в `outbounds` каждого хоста.
 
-Текущий основной — `breeze-reef` VLESS/REALITY/XHTTP443 (`pool-breeze-reef-0`). Резерв — Hysteria UDP55625 (`pool-breeze-reef-hysteria-v2`) **того же VPS**. Оба используют физический NL-хост `144.31.34.165`. Для продолжения работы при полном отказе VPS требуется добавить независимый хост; команда `add_host.py` добавляет его в конец списка резервов.
+Текущий основной — `breeze-reef` VLESS/REALITY/XHTTP443 (`pool-breeze-reef-0`). Первый резерв — отдельный VLESS/REALITY TCP8443 (`pool-breeze-reef-tcp-v1`), последний — Hysteria UDP55625 (`pool-breeze-reef-hysteria-v2`). Все три используют физический NL-хост `144.31.34.165`. Для продолжения работы при полном отказе VPS требуется добавить независимый хост; команда `add_host.py` добавляет его в конец списка резервов.
+
+С 20 октября порядок явно закреплён `balancer.priority_order`: основной XHTTP, затем TCP. Hysteria и новые узлы добавляются после них в обычном порядке inventory. TCP-резерв добавлен после измерения Hysteria менее 1 Мбит/с; основной XHTTP оказался быстрее TCP и сохранён. [Измерения и Android-профиль](android-and-performance.md).
 
 Private Hysteria outbound содержит тот же Salamander mask, что и сервер. Его пароль хранится только в `.local/outbounds/` и GitHub Secret `VPN_OUTBOUNDS_JSON`. В текущей паре версий Xray нативные Hysteria UDP DATAGRAM показали нестабильную доставку. Поэтому только для этого резерва UDP передаётся через XUDP в Hysteria streams: `mux.enabled=true`, `concurrency=-1`, `xudpConcurrency=16`, `xudpProxyUDP443=allow`. Обычный TCP не мультиплексируется. Настройки NL-сервера и клиентских VPN-профилей для этого не меняются. Потоки надёжного транспорта могут увеличивать задержку UDP при потерях; основной VLESS этим изменением не затронут.
 
@@ -27,7 +29,7 @@ Selectors Xray сопоставляют префиксы. Генератор о�
 
 ## Изменить основной хост или порядок резервов
 
-Для смены основного хоста переставьте **хосты** в `nodes`. Массив файлов `outbounds` существующего узла не переставляйте: его индексы определяют постоянные tags. Для другого приоритета транспорта задайте, например, `balancer.priority_order: ["pool-breeze-reef-hysteria-v2"]`: этот tag станет первым, остальные сохранят обычный порядок. Поле принимает уникальные существующие tags; новые хосты всё равно добавляются в конец. Затем:
+Для смены основного выхода измените `balancer.priority_order`, указав нужный tag первым. Порядок `nodes` применяется к оставшимся незаданным tags; перестановка хостов сама по себе не переопределяет явно закреплённый приоритет. Массив файлов `outbounds` существующего узла не переставляйте: его индексы определяют постоянные tags. Например, `balancer.priority_order: ["pool-breeze-reef-hysteria-v2"]` сделает этот tag первым, остальные сохранят обычный порядок. Поле принимает уникальные существующие tags; новые хосты добавляются после явно заданных выходов. Затем:
 
 ```bash
 python3 scripts/render.py
@@ -58,5 +60,7 @@ sudo python3 /opt/vpn-infra/staging/entry/balancer/update_pool.py \
 ```
 
 Команда также использует watchdog и проверку TCP/UDP. Не возвращайте устаревший снимок после добавления/изменения узлов без просмотра различий. После ручного отката приведите inventory в соответствие с выбранной схемой, иначе следующий render/deploy восстановит priority.
+
+Снимок добавления TCP-резерва 20 октября, 14:10 МСК: `/var/backups/vpn-infra/pool-20261020T111011292202Z`. `before.json` содержит прежнюю двухступенчатую priority-схему; `after.json` — XHTTP → TCP → Hysteria. Открытый HTTPS CONNECT пережил добавление на том же TLS-сокете; PID пула `992031` и основной runtime сохранились.
 
 Источники: [Xray routing/balancers](https://xtls.github.io/en/config/routing.html), [Loopback для balancer fallback](https://xtls.github.io/en/config/outbounds/loopback.html).

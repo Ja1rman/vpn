@@ -44,6 +44,17 @@
       "pool-breeze-reef-tcp-v1"
     ]
   },
+  "failover": {
+    "egresses": [
+      {"name": "ihor", "address": "45.9.74.57", "source": "main", "tag": "ihor-vless-1-5jj7e3veas"},
+      {"name": "breeze-reef", "address": "144.31.34.165", "source": "legacy", "tag": "pool-breeze-reef-tcp-v1"},
+      {"name": "srv-41969", "address": "13.143.134.214", "source": "main", "tag": "srv-41969-vless-t361oghssd"}
+    ],
+    "probe_urls": [
+      "https://www.google.com/generate_204",
+      "https://cp.cloudflare.com/generate_204"
+    ]
+  },
   "monitoring": {
     "node_port": 19100,
     "prometheus_port": 9090,

@@ -10,5 +10,5 @@ receivers:
   - name: web-only
 inhibit_rules:
   - source_matchers: ['alertname="NodeUnavailable"']
-    target_matchers: ['severity="warning"']
+    target_matchers: ['severity="warning"', 'alertname=~"VpnPortUnavailable|HighCPU|HighMemory|DiskSpaceLow|HighNetworkTraffic"']
     equal: [host]

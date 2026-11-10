@@ -118,10 +118,28 @@ def refresh_probes():
     remote(inventory()['entry']['name'],'sudo python3 '+shlex.join([
         stage+'/refresh_probe_targets.py',stage+'/payload/vpn-targets.json']))
 
+def stage_failover():
+    folder=ROOT/'.local/failover-deploy'
+    folder.mkdir(mode=0o700,exist_ok=True)
+    (folder/'hosts.json').write_bytes(INVENTORY.read_bytes())
+    print(upload(inventory()['entry']['name'],folder,[
+        'failover_variant.py','priority_pool.py','verify_priority_backup.py','verify_vpn.py',
+        'enable_failover_variant.py','failover_subscription.py','install_failover_subscription.py']))
+
+def refresh_failover_monitoring():
+    import shutil
+    folder=ROOT/'.local/failover-monitoring'
+    (folder/'prometheus').mkdir(parents=True,mode=0o700,exist_ok=True)
+    for name in ('blackbox.yml','prometheus/prometheus.yml','prometheus/alerts.yml','prometheus/vpn-targets.json'):
+        shutil.copyfile(ROOT/'.local/rendered/monitoring'/name,folder/name)
+    stage=upload(inventory()['entry']['name'],folder,['refresh_failover_alerts.py'])
+    remote(inventory()['entry']['name'],'sudo python3 '+shlex.join([
+        stage+'/refresh_failover_alerts.py',stage+'/payload','--apply']))
+
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','deploy-compatible','publish-compatible','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','deploy-compatible','publish-compatible','stage-failover','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
@@ -136,6 +154,8 @@ def main():
     elif args.command=='deploy-compatible':deploy_compatible()
     elif args.command=='publish-compatible':publish_compatible()
     elif args.command=='refresh-probes':refresh_probes()
+    elif args.command=='stage-failover':stage_failover()
+    elif args.command=='refresh-failover-monitoring':refresh_failover_monitoring()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)
     elif args.command=='tunnel':
         cmd=ssh_args(inventory()['entry']['name'])

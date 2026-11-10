@@ -88,8 +88,23 @@ def prometheus_config(inv):
     entry_ports=probe_ports(inv['entry'],[33172,58663])+[inv['balancer']['socks_port']]
     probes=[{"targets":[f"127.0.0.1:{p}" for p in dict.fromkeys(entry_ports)],"labels":{"host":"entry"}}]
     probes += [{"targets":[f"{n['address']}:{p}" for p in probe_ports(n,[n.get('vpn_port',443)])],"labels":{"host":n['name']}} for n in inv['nodes']]
+    if 'failover' in inv:
+        probes += [
+            {"targets":["127.0.0.1:33174"],"labels":{"host":"entry","service":"failover","role":"frontend"}},
+            {"targets":["127.0.0.1:46738"],"labels":{"host":"entry","service":"failover","role":"auth"}},
+            {"targets":["127.0.0.1:2097"],"labels":{"host":"entry","service":"failover","role":"subscription"}},
+        ]
     jobs.append({"job_name":"vpn-tcp", "metrics_path":"/probe", "params":{"module":["tcp_connect"]}, "file_sd_configs":[{"files":["/etc/vpn-monitoring/prometheus/vpn-targets.json"]}], "relabel_configs":[{"source_labels":["__address__"],"target_label":"__param_target"},{"source_labels":["__param_target"],"target_label":"instance"},{"target_label":"__address__","replacement":"127.0.0.1:9115"}]})
-    jobs.append({"job_name":"vpn-egress", "metrics_path":"/probe", "params":{"module":["http_vpn"]}, "static_configs":[{"targets":[inv['balancer']['probe_url']],"labels":{"host":"entry"}}], "relabel_configs":[{"source_labels":["__address__"],"target_label":"__param_target"},{"source_labels":["__param_target"],"target_label":"instance"},{"target_label":"__address__","replacement":"127.0.0.1:9115"}]})
+    urls=inv.get('failover',{}).get('probe_urls',[inv['balancer']['probe_url']])
+    egresses=[{"targets":urls,"labels":{"host":"entry","service":"legacy","probe_module":"http_vpn"}}]
+    if 'failover' in inv:
+        egresses.append({"targets":urls,"labels":{"host":"entry","service":"failover","probe_module":"http_vpn_failover"}})
+    jobs.append({"job_name":"vpn-egress", "metrics_path":"/probe", "static_configs":egresses,
+                 "relabel_configs":[{"source_labels":["__address__"],"target_label":"__param_target"},
+                                    {"source_labels":["__param_target"],"target_label":"instance"},
+                                    {"source_labels":["probe_module"],"target_label":"__param_module"},
+                                    {"action":"labeldrop","regex":"probe_module"},
+                                    {"target_label":"__address__","replacement":"127.0.0.1:9115"}]})
     return base, targets, probes
 
 def main():

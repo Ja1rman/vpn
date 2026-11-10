@@ -1,30 +1,48 @@
 groups:
   - name: vpn-infrastructure
     rules:
-      - alert: VpnEgressUnavailable
-        expr: probe_success{job="vpn-egress"} == 0
-        for: 1m
+      - alert: VpnFailoverUnavailable
+        expr: |
+          (max by (host, service) (probe_success{job="vpn-egress",service="failover"}) == 0)
+          or
+          (min by (host, service) (probe_success{job="vpn-tcp",service="failover",role=~"frontend|auth"}) == 0)
+        for: 2m
+        keep_firing_for: 3m
         labels:
           severity: critical
         annotations:
-          summary: 'VPN: нет доступа в интернет через пул выходных узлов'
-          description: 'Проверка HTTP через SOCKS балансировщика не проходит больше минуты.'
+          summary: 'VPN: недоступен сервис с резервированием'
+          description: 'Две минуты недоступен вход VPN или его авторизация, либо не проходит ни одна HTTPS-проверка через новый пул.'
+      - alert: VpnLegacyEgressUnavailable
+        expr: max by (host) (probe_success{job="vpn-egress",service=~"legacy|"}) == 0
+        for: 3m
+        keep_firing_for: 5m
+        labels:
+          severity: warning
+          service: legacy
+        annotations:
+          summary: 'VPN: не работает выход старых профилей'
+          description: 'Ни одна HTTPS-проверка через старый пул не проходила три минуты. Состояние нового сервиса проверяется отдельно.'
       - alert: NodeUnavailable
         expr: up{job="node"} == 0
         for: 2m
+        keep_firing_for: 5m
         labels:
-          severity: critical
+          severity: warning
         annotations:
           summary: 'Сервер {{ $labels.host }}: метрики недоступны'
-          description: 'Node Exporter не отвечает более двух минут; проверьте сервер, сеть и exporter.'
+          description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
       - alert: VpnPortUnavailable
-        expr: probe_success{job="vpn-tcp"} == 0
-        for: 1m
+        expr: |
+          (probe_success{job="vpn-tcp"} == 0)
+          unless probe_success{job="vpn-tcp",service="failover",role=~"frontend|auth"}
+        for: 3m
+        keep_firing_for: 5m
         labels:
-          severity: critical
+          severity: warning
         annotations:
           summary: 'VPN {{ $labels.host }}: порт недоступен'
-          description: 'TCP-проверка {{ $labels.instance }} не проходит более минуты.'
+          description: 'TCP-проверка {{ $labels.instance }} не проходила три минуты.'
       - alert: HighCPU
         expr: 100 * (1 - avg by (host, instance) (rate(node_cpu_seconds_total{job="node",mode="idle"}[5m]))) > 85
         for: 10m

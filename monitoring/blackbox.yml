@@ -7,6 +7,14 @@ modules:
       valid_status_codes: [204]
       proxy_url: socks5://127.0.0.1:11090
       preferred_ip_protocol: ip4
+  http_vpn_failover:
+    prober: http
+    timeout: 12s
+    http:
+      method: GET
+      valid_status_codes: [204]
+      proxy_url: socks5://127.0.0.1:11092
+      preferred_ip_protocol: ip4
   tcp_connect:
     prober: tcp
     timeout: 5s

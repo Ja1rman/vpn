@@ -6,24 +6,91 @@ tests:
     interval: 1m
     input_series:
       - series: 'up{job="node",host="exit-a",instance="exit-a:19100"}'
-        values: '0x3'
+        values: '0x5'
       - series: 'probe_success{job="vpn-egress",host="entry",instance="probe"}'
-        values: '0x3'
+        values: '0x5'
+      - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="probe"}'
+        values: '1x5'
+      - series: 'probe_success{job="vpn-tcp",host="exit-a",instance="exit-a:443"}'
+        values: '0x5'
     alert_rule_test:
       - eval_time: 2m
         alertname: NodeUnavailable
         exp_alerts:
-          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:19100', severity: critical}
+          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:19100', severity: warning}
             exp_annotations:
               summary: 'Сервер exit-a: метрики недоступны'
-              description: 'Node Exporter не отвечает более двух минут; проверьте сервер, сеть и exporter.'
-      - eval_time: 2m
-        alertname: VpnEgressUnavailable
+              description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
+      - eval_time: 3m
+        alertname: VpnLegacyEgressUnavailable
         exp_alerts:
-          - exp_labels: {job: vpn-egress, host: entry, instance: probe, severity: critical}
+          - exp_labels: {host: entry, service: legacy, severity: warning}
             exp_annotations:
-              summary: 'VPN: нет доступа в интернет через пул выходных узлов'
-              description: 'Проверка HTTP через SOCKS балансировщика не проходит больше минуты.'
+              summary: 'VPN: не работает выход старых профилей'
+              description: 'Ни одна HTTPS-проверка через старый пул не проходила три минуты. Состояние нового сервиса проверяется отдельно.'
+      - eval_time: 3m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: VpnPortUnavailable
+        exp_alerts:
+          - exp_labels: {job: vpn-tcp, host: exit-a, instance: 'exit-a:443', severity: warning}
+            exp_annotations:
+              summary: 'VPN exit-a: порт недоступен'
+              description: 'TCP-проверка exit-a:443 не проходила три минуты.'
+  - name: failover-egress-requires-all-targets-to-fail-and-debounces-recovery
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="target-a"}'
+        values: '0x3 1x6'
+      - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="target-b"}'
+        values: '0x10'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:33174"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: &failover_alert
+          - exp_labels: {host: entry, service: failover, severity: critical}
+            exp_annotations:
+              summary: 'VPN: недоступен сервис с резервированием'
+              description: 'Две минуты недоступен вход VPN или его авторизация, либо не проходит ни одна HTTPS-проверка через новый пул.'
+      - eval_time: 6m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: *failover_alert
+      - eval_time: 7m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: []
+  - name: frontend-and-subscription-fail-independently
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="target-a"}'
+        values: '0x8'
+      - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="target-b"}'
+        values: '1x8'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:33174"}'
+        values: '1x1 0x6'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="auth",instance="entry:46738"}'
+        values: '1x8'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="subscription",instance="entry:2097"}'
+        values: '0x8'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: *failover_alert
+      - eval_time: 5m
+        alertname: VpnPortUnavailable
+        exp_alerts:
+          - exp_labels: {job: vpn-tcp, host: entry, service: failover, role: subscription, instance: 'entry:2097', severity: warning}
+            exp_annotations:
+              summary: 'VPN entry: порт недоступен'
+              description: 'TCP-проверка entry:2097 не проходила три минуты.'
   - name: high-network-and-healthy-target
     interval: 1m
     input_series:

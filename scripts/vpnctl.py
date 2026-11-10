@@ -17,7 +17,8 @@ def inventory():return json.loads(INVENTORY.read_text())
 
 def node(name):
     inv=inventory()
-    return next(n for n in [inv['entry']]+inv['nodes'] if n['name']==name)
+    standalone=[n for n in inv.get('failover',{}).get('egresses',[]) if n.get('source')=='file' and 'user' in n]
+    return next(n for n in [inv['entry']]+inv['nodes']+standalone if n['name']==name)
 
 def ssh_args(name):
     n=node(name)
@@ -119,12 +120,30 @@ def refresh_probes():
         stage+'/refresh_probe_targets.py',stage+'/payload/vpn-targets.json']))
 
 def stage_failover():
-    folder=ROOT/'.local/failover-deploy'
-    folder.mkdir(mode=0o700,exist_ok=True)
-    (folder/'hosts.json').write_bytes(INVENTORY.read_bytes())
-    print(upload(inventory()['entry']['name'],folder,[
-        'failover_variant.py','priority_pool.py','verify_priority_backup.py','verify_vpn.py',
-        'enable_failover_variant.py','failover_subscription.py','install_failover_subscription.py']))
+    from failover_variant import private_outbound_file
+    import tempfile
+    raw=INVENTORY.read_bytes()
+    inv=json.loads(raw)
+    with tempfile.TemporaryDirectory(prefix='failover-deploy-',dir=ROOT/'.local') as tmp:
+        folder=Path(tmp)
+        (folder/'hosts.json').write_bytes(raw)
+        for entry in inv['failover']['egresses']:
+            if entry['source']=='file':
+                filename=private_outbound_file(entry)
+                source=ROOT/'.local/outbounds'/filename
+                if source.is_symlink() or not source.is_file():
+                    raise ValueError('Missing private outbound: '+filename)
+                (folder/'outbounds').mkdir(mode=0o700,exist_ok=True)
+                (folder/'outbounds'/filename).write_bytes(source.read_bytes())
+        return upload(inv['entry']['name'],folder,[
+            'failover_variant.py','priority_pool.py','verify_priority_backup.py','verify_vpn.py',
+            'enable_failover_variant.py','failover_subscription.py','install_failover_subscription.py',
+            'update_failover_pool.py'])
+
+def update_failover_pool():
+    stage=stage_failover()
+    remote(inventory()['entry']['name'],'sudo python3 '+shlex.join([
+        stage+'/update_failover_pool.py',stage+'/payload/hosts.json']))
 
 def refresh_failover_monitoring():
     import shutil
@@ -139,7 +158,7 @@ def refresh_failover_monitoring():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','deploy-compatible','publish-compatible','stage-failover','refresh-failover-monitoring','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
@@ -154,7 +173,8 @@ def main():
     elif args.command=='deploy-compatible':deploy_compatible()
     elif args.command=='publish-compatible':publish_compatible()
     elif args.command=='refresh-probes':refresh_probes()
-    elif args.command=='stage-failover':stage_failover()
+    elif args.command=='stage-failover':print(stage_failover())
+    elif args.command=='update-failover-pool':update_failover_pool()
     elif args.command=='refresh-failover-monitoring':refresh_failover_monitoring()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)
     elif args.command=='tunnel':

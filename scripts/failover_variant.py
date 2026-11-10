@@ -25,7 +25,14 @@ SOURCE_IP = '127.0.0.2'
 PORTS = {'pool': (11092, 11093), 'entry': (33174,)}
 
 
-def build_pool(settings, main, old):
+def private_outbound_file(item):
+    name = item.get('file')
+    if not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+\.json', name):
+        raise ValueError('Invalid private outbound filename')
+    return name
+
+
+def build_pool(settings, main, old, private_folder=None):
     config = copy.deepcopy(old)
     ports = {i['tag']: i for i in config['inbounds']}
     if set(ports) != {'pool-socks', 'api'}:
@@ -38,15 +45,29 @@ def build_pool(settings, main, old):
         name = item['name']
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,30}', name):
             raise ValueError('Invalid egress name')
-        choices = [o for o in exports[item['source']] if o.get('tag') == item['tag']]
-        if len(choices) != 1:
-            raise ValueError('Configured egress not found: ' + name)
-        outbound = copy.deepcopy(choices[0])
+        if item['source'] == 'file':
+            if private_folder is None:
+                raise ValueError('Private outbound directory not provided')
+            source = private_folder / private_outbound_file(item)
+            if source.is_symlink() or not source.is_file():
+                raise ValueError('Private outbound file missing: ' + name)
+            outbound = json.loads(source.read_text())
+        else:
+            choices = [o for o in exports[item['source']] if o.get('tag') == item['tag']]
+            if len(choices) != 1:
+                raise ValueError('Configured egress not found: ' + name)
+            outbound = copy.deepcopy(choices[0])
         if outbound['protocol'] != 'vless' or outbound.get('streamSettings', {}).get('security') not in ('tls', 'reality'):
             raise ValueError('Egress must be encrypted VLESS: ' + name)
         if outbound.get('proxySettings') or outbound.get('streamSettings', {}).get('sockopt', {}).get('dialerProxy'):
             raise ValueError('External dependency on another local outbound: ' + name)
-        address = str(ipaddress.ip_address(outbound['settings']['address']))
+        endpoint = outbound['settings']
+        if 'address' not in endpoint:
+            servers = endpoint.get('vnext', [])
+            if not isinstance(servers, list) or len(servers) != 1:
+                raise ValueError('Expected one VLESS endpoint: ' + name)
+            endpoint = servers[0]
+        address = str(ipaddress.ip_address(endpoint['address']))
         if address != item['address'] or address in addresses or not ipaddress.ip_address(address).is_global:
             raise ValueError('Egress address differs or is not distinct: ' + name)
         addresses.add(address)
@@ -207,7 +228,8 @@ def main():
     args = parser.parse_args()
     read = lambda path: json.loads(path.read_text())
     if args.kind == 'pool':
-        config, names = build_pool(read(args.inventory)['failover'], read(MAIN), read(OLD_POOL))
+        config, names = build_pool(read(args.inventory)['failover'], read(MAIN), read(OLD_POOL),
+                                   private_folder=args.inventory.parent/'outbounds')
         print('Failover priority: ' + ' -> '.join(names))
     else:
         config = build_entry(read(OLD_FRONTEND))

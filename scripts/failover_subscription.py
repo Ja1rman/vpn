@@ -21,7 +21,9 @@ from uuid import UUID
 MAX_BODY = 128 * 1024
 REQUEST_TIMEOUT = 6
 MAX_CONCURRENT = 16
-SUB_PATH = re.compile(r"/failover/([A-Za-z0-9_-]{1,128})")
+# Both paths on :2097 produce the same filtered feed. The full x-ui feed
+# remains on :2096/sub/ and is never served by this handler.
+SUB_PATH = re.compile(r"/(?:failover|sub)/([A-Za-z0-9_-]{1,128})")
 ANDROID_PREFIX = "mc-ubuntu-breeze-reef-android-"
 PASS_REQUEST_HEADERS = ("User-Agent", "X-HWID", "X-Device-OS", "X-Ver-OS", "X-Device-Model")
 PASS_RESPONSE_HEADERS = ("Subscription-Userinfo", "Profile-Update-Interval", "Support-Url", "Announce")

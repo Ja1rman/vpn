@@ -25,6 +25,24 @@ class FailoverSubscriptionTests(unittest.TestCase):
     def wrapped(*lines):
         return base64.b64encode(("\n".join(lines) + "\n").encode())
 
+    def test_aliases_serve_the_same_single_profile(self):
+        body = feed.rewrite_profile(self.wrapped(self.legacy, self.compatible), self.settings)
+        responses = []
+        with patch.object(feed, "fetch_profile", return_value=(body, {})) as fetch:
+            for prefix in ("sub", "failover"):
+                handler = Mock(path=f"/{prefix}/fixture_id")
+                handler.server.settings = self.settings
+                feed.SubscriptionHandler.do_GET(handler)
+                responses.append(handler.reply.call_args)
+            self.assertEqual(responses[0], responses[1])
+            self.assertEqual(responses[0].args[:2], (200, body))
+            self.assertEqual([call.args[0] for call in fetch.call_args_list], ["fixture_id", "fixture_id"])
+            for invalid in ("/sub/../fixture_id", "/sub/fixture_id?extra=1"):
+                handler = Mock(path=invalid)
+                feed.SubscriptionHandler.do_GET(handler)
+                self.assertEqual(handler.reply.call_args.args[0], 404)
+            self.assertEqual(fetch.call_count, 2)
+
     def test_mixed_feed_yields_only_one_profile_with_credentials_unchanged(self):
         original = self.wrapped("ss://fixture@example.invalid", self.legacy, self.compatible)
         body = feed.rewrite_profile(original, self.settings)

@@ -1,0 +1,18 @@
+[Unit]
+Description=Export x-ui VPN usage to the Node Exporter textfile collector
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B /opt/vpn-usage/collector.py
+TimeoutStartSec=10s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/vpn-node/textfile

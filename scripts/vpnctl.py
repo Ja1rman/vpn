@@ -67,6 +67,27 @@ def refresh_grafana():
     remote(name,'sudo python3 '+shlex.join([stage+'/rename_grafana_user.py',stage+'/payload']))
     remote(name,'sudo bash '+shlex.join([stage+'/refresh_grafana.sh',stage+'/payload']))
 
+def deploy_vpn_usage():
+    import shutil
+    import tempfile
+
+    name = inventory()['entry']['name']
+    private = ROOT / '.local'
+    with tempfile.TemporaryDirectory(prefix='vpn-usage-', dir=private) as tmp:
+        folder = Path(tmp)
+        monitoring = ROOT / 'monitoring'
+        for unit in ('vpn-usage-collector.service', 'vpn-usage-collector.timer'):
+            shutil.copyfile(monitoring / 'usage' / unit, folder / unit)
+        shutil.copyfile(monitoring / 'grafana/dashboards/vpn-usage.json', folder / 'vpn-usage.json')
+        mapping = private / 'vpn-usage-devices.json'
+        if mapping.is_file():
+            shutil.copyfile(mapping, folder / 'devices.json')
+        stage = upload(name, folder, ['install_vpn_usage.sh', 'vpn_usage_collector.py'])
+        try:
+            remote(name, 'sudo bash ' + shlex.join([stage + '/install_vpn_usage.sh', stage]))
+        finally:
+            remote(name, 'sudo rm -rf -- ' + shlex.quote(stage))
+
 def refresh_alertmanager():
     name=inventory()['entry']['name']
     stage=upload(name,ROOT/'.local/rendered/monitoring/alertmanager',['refresh_alertmanager.py'])
@@ -158,13 +179,14 @@ def refresh_failover_monitoring():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','refresh-failover-monitoring','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
     elif args.command=='deploy-node':deploy_node(args.name)
     elif args.command=='deploy-monitoring':deploy_monitoring()
     elif args.command=='refresh-grafana':refresh_grafana()
+    elif args.command=='deploy-vpn-usage':deploy_vpn_usage()
     elif args.command=='refresh-alertmanager':refresh_alertmanager()
     elif args.command=='deploy-balancer':deploy_balancer()
     elif args.command=='activate-balancer':activate_balancer()

@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix="vpn-backup-") as tmp:
         certs=[value for key,value in source.execute('SELECT key,value FROM settings') if key in {'webCertFile','webKeyFile','subCertFile','subKeyFile'} and value]
         destination.close()
         source.close()
-    paths = ["/usr/local/x-ui/bin/config.json", "/usr/local/x-ui/x-ui.sh", "/etc/default/x-ui", "/usr/bin/x-ui", '/etc/vpn-balancer', '/etc/vpn-compatible-vless', '/etc/vpn-failover', '/etc/vpn-failover-subscription', '/etc/vpn-node', '/etc/vpn-exit', '/etc/vpn-monitoring', '/opt/vpn-infra/staging', '/root/.acme.sh']+certs
+    paths = ["/usr/local/x-ui/bin/config.json", "/usr/local/x-ui/x-ui.sh", "/etc/default/x-ui", "/usr/bin/x-ui", '/etc/vpn-balancer', '/etc/vpn-compatible-vless', '/etc/vpn-failover', '/etc/vpn-failover-subscription', '/etc/vpn-node', '/etc/vpn-exit', '/etc/vpn-monitoring', '/etc/vpn-usage', '/opt/vpn-usage', '/opt/vpn-infra/staging', '/root/.acme.sh']+certs
     def collect_cert_files(value):
         if isinstance(value,dict):
             for key,item in value.items():

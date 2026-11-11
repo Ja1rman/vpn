@@ -4,6 +4,7 @@ import argparse
 from contextlib import closing
 import fcntl
 import grp
+import http.client
 import json
 import os
 from pathlib import Path
@@ -22,7 +23,7 @@ NAME = "vpn-failover-subscription"
 SERVICE = NAME + ".service"
 CERT_SERVICE = NAME + "-cert.service"
 CERT_TIMER = NAME + "-cert.timer"
-ADDRESS, PORT = "212.22.70.156", 2097
+ADDRESS, PORT, AUTO_TLS_PORT = "212.22.70.156", 2097, 33175
 CONFIG = Path("/etc") / NAME
 RUNTIME = Path("/opt") / NAME
 TLS = CONFIG / "tls.pem"
@@ -208,16 +209,110 @@ def account_is_absent():
     return False
 
 
-def probe_listener():
+def probe_listener(port=PORT):
     trust = ssl.create_default_context()
     for _ in range(20):
         try:
-            with socket.create_connection(("127.0.0.1", PORT), timeout=2) as raw:
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as raw:
                 with trust.wrap_socket(raw, server_hostname=ADDRESS):
                     return
         except OSError:
             time.sleep(0.25)
-    raise RuntimeError("The new subscription port did not answer with a trusted TLS certificate")
+    raise RuntimeError(f"Port {port} did not answer with a trusted TLS certificate")
+
+
+def current_ids():
+    uri = DATABASE.resolve(strict=True).as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=3)) as db:
+        return [sub_id for sub_id, in db.execute("""SELECT DISTINCT c.sub_id FROM clients AS c
+            JOIN client_inbounds AS ci ON ci.client_id=c.id
+            JOIN inbounds AS i ON i.id=ci.inbound_id
+            WHERE i.port=46738 AND i.enable=1 AND c.enable=1 AND c.sub_id != ''
+            ORDER BY c.id LIMIT 32""")]
+
+
+def subscription_body(port, sub_id):
+    from failover_subscription import LoopbackHTTPSConnection, MAX_BODY, SUB_PATH
+
+    path = "/sub/" + sub_id
+    if not SUB_PATH.fullmatch(path):
+        raise RuntimeError("Unexpected subscription identifier format")
+    with closing(LoopbackHTTPSConnection(ADDRESS, port, context=ssl.create_default_context(), timeout=3)) as client:
+        client.request("GET", path, headers={"Accept-Encoding": "identity"})
+        response = client.getresponse()
+        if response.status == 404:
+            return None
+        if response.status != 200:
+            raise RuntimeError("An existing subscription did not respond successfully")
+        data = response.read(MAX_BODY + 1)
+        if not data or len(data) > MAX_BODY:
+            raise RuntimeError("Unexpected subscription response size")
+        return data
+
+
+def check_existing_feeds(port, feeds):
+    for sub_id, body in feeds.items():
+        if subscription_body(port, sub_id) != body:
+            raise RuntimeError("An existing VPN Auto profile changed")
+
+
+def upgrade(source):
+    """Validate the existing feeds on a private test port, then replace only :2097."""
+    gid = check_account()
+    user = pwd.getpwnam(NAME).pw_uid
+    command("systemctl", "is-active", "--quiet", SERVICE)
+    if any(path.is_symlink() or not path.is_file() for path in (APPLICATION, INSTALLER)):
+        raise RuntimeError("Subscription application must already be installed in dedicated regular files")
+    if (UNITS / SERVICE).read_bytes() != SERVICE_TEXT.encode():
+        raise RuntimeError("Subscription unit differs from the expected unit")
+    probe_listener(AUTO_TLS_PORT)
+    code = source.read_bytes()
+    compile(code, APPLICATION.name, "exec")
+    payload = {APPLICATION: code, INSTALLER: Path(__file__).read_bytes()}
+    previous = {path: path.read_bytes() for path in payload}
+    if payload == previous:
+        return {"updated": False}
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
+        probe.bind(("127.0.0.1", 0))
+        test_port = probe.getsockname()[1]
+    feeds = {sub_id: body for sub_id in current_ids() if (body := subscription_body(PORT, sub_id)) is not None}
+    if not feeds:
+        raise RuntimeError("No live legacy VPN Auto subscription was available to verify")
+
+    with tempfile.TemporaryDirectory(prefix=".upgrade-", dir=RUNTIME) as directory:
+        staging = Path(directory)
+        os.chown(staging, 0, gid)
+        staging.chmod(0o750)
+        candidate = staging / APPLICATION.name
+        write_exclusive(candidate, code, mode=0o640, group=gid)
+        process = subprocess.Popen(["/usr/bin/python3", "-B", str(candidate), "--listen", "127.0.0.1",
+                                    "--port", str(test_port), "--tls-cert", str(TLS), "--tls-key", str(TLS)],
+                                   user=user, group=gid, extra_groups=[],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            probe_listener(test_port)
+            check_existing_feeds(test_port, feeds)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+        def replace(paths, suffix):
+            for path, data in paths.items():
+                replacement = staging / (path.name + suffix)
+                write_exclusive(replacement, data, mode=0o640, group=gid)
+                os.replace(replacement, path)
+
+        try:
+            replace(payload, ".new")
+            command("systemctl", "restart", SERVICE)
+            probe_listener()
+            check_existing_feeds(PORT, feeds)
+        except BaseException:
+            replace(previous, ".old")
+            command("systemctl", "restart", SERVICE)
+            probe_listener()
+            raise
+    return {"updated": True, "unchanged_existing_feeds": len(feeds)}
 
 
 def install(source):
@@ -305,17 +400,25 @@ def main():
     setup = commands.add_parser("install")
     setup.add_argument("--service-script", type=Path,
                        default=Path(__file__).with_name("failover_subscription.py"))
+    update = commands.add_parser("upgrade")
+    update.add_argument("--service-script", type=Path,
+                        default=Path(__file__).with_name("failover_subscription.py"))
     commands.add_parser("sync-certificate")
     args = parser.parse_args()
     try:
         if os.geteuid() != 0 or not Path("/run/systemd/system").is_dir():
             raise RuntimeError("Run as root on a host with systemd")
-        result = install(args.service_script) if args.command == "install" else {
-            "certificate_changed": sync_certificate()}
+        if args.command == "install":
+            result = install(args.service_script)
+        elif args.command == "upgrade":
+            result = upgrade(args.service_script)
+        else:
+            result = {"certificate_changed": sync_certificate()}
         print(json.dumps(result))
     except RuntimeError as exc:
         parser.exit(1, "failover subscription: " + str(exc) + "\n")
-    except (OSError, ValueError, KeyError, SyntaxError, sqlite3.Error, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, KeyError, SyntaxError, http.client.HTTPException,
+            sqlite3.Error, subprocess.SubprocessError) as exc:
         parser.exit(1, "failover subscription: operation failed (" + type(exc).__name__ + ")\n")
 
 

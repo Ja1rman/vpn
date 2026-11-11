@@ -34,15 +34,15 @@ flowchart LR
 
 ## Внешний доступ и реквизиты
 
-- [Grafana](http://212.22.70.156/grafana/) — форма входа, дашборд **VPN → VPN — серверы и сетевой трафик**.
+- [Grafana](https://212.22.70.156/grafana/) — форма входа, дашборд **VPN → VPN — серверы и сетевой трафик**.
 - [Alertmanager](http://212.22.70.156/alerts/) — HTTP Basic Auth.
 - [Prometheus](http://212.22.70.156/prometheus/) — HTTP Basic Auth.
 
-Логин — **`admin`**. Сложный случайный пароль: **`.local/access.md`** и `.local/access.json`. В GitHub эти файлы не попадают. Grafana и HTTP Basic Auth используют одинаковые реквизиты. HTTP открыт по запросу владельца; данные и пароль передаются без TLS. Для использования в недоверенных сетях можно сохранить SSH-туннель или добавить HTTPS на reverse proxy.
+Логин — **`admin`**. Пароль хранится в **`.local/access.md`** и `.local/access.json`. Grafana и HTTP Basic Auth используют одинаковые реквизиты. Для входа в Grafana используйте HTTPS. Старый HTTP-вход и HTTP для Alertmanager и Prometheus сохраняются. В недоверенной сети для этих двух служб можно использовать SSH-туннель. [Настройка HTTPS для Grafana](docs/grafana-https.md).
 
 Чтобы сменить пароль или логин, измените поле в `.local/access.json`, затем выполните `render.py` и `refresh-grafana`. Текущий логин определяется по установленному файлу и меняется через API. Сохраняйте длину пароля не менее 24 случайных символов.
 
-Порты `3000`, `9090`, `9093`, `9115`, `11090`, `11091` слушают только loopback. Публичен nginx на TCP `80`. Node Exporter на выходном VPS использует TCP `19100` с обязательным клиентским TLS-сертификатом; на входном сервере этот порт доступен только через loopback. Существующий firewall и сетевые настройки VPN не изменялись.
+Порты `3000`, `9090`, `9093`, `9115`, `11090`, `11091` слушают только loopback. Мониторинг доступен через nginx на TCP `80`, Grafana также доступна через отдельный HTTPS-вход на TCP `443`. Node Exporter на выходном VPS использует TCP `19100` с обязательным клиентским TLS-сертификатом; на входном сервере этот порт доступен только через loopback.
 
 SSH-туннель при необходимости:
 
@@ -186,12 +186,12 @@ python3 scripts/vpnctl.py deploy-monitoring
 
 | Дашборд | Содержимое |
 |---|---|
-| [Обзор](http://212.22.70.156/grafana/d/vpn-infrastructure/) | Доступность, основные ресурсы, трафик и активные алерты |
-| [CPU](http://212.22.70.156/grafana/d/vpn-cpu/) | Загрузка по ядрам и режимам, iowait/steal, load, процессы, переключения контекста и CPU pressure |
-| [RAM и swap](http://212.22.70.156/grafana/d/vpn-memory/) | MemAvailable, cache/buffers, swap, page faults и memory pressure |
-| [Диски](http://212.22.70.156/grafana/d/vpn-disks/) | Место и inode по файловым системам, чтение/запись, IOPS, задержки, занятость диска и очередь |
-| [Сеть и TCP](http://212.22.70.156/grafana/d/vpn-network/) | RX/TX, объём за период, пакеты, ошибки, потери, бюджет канала и TCP retransmits |
-| [Использование VPN](http://212.22.70.156/grafana/d/vpn-usage/) | Входящий и исходящий трафик за период, активные подписки и устройства с индивидуальными профилями. [Как связать устройства с подписками](docs/vpn-usage.md) |
+| [Обзор](https://212.22.70.156/grafana/d/vpn-infrastructure/) | Доступность, основные ресурсы, трафик и активные алерты |
+| [CPU](https://212.22.70.156/grafana/d/vpn-cpu/) | Загрузка по ядрам и режимам, iowait/steal, load, процессы, переключения контекста и CPU pressure |
+| [RAM и swap](https://212.22.70.156/grafana/d/vpn-memory/) | MemAvailable, cache/buffers, swap, page faults и memory pressure |
+| [Диски](https://212.22.70.156/grafana/d/vpn-disks/) | Место и inode по файловым системам, чтение/запись, IOPS, задержки, занятость диска и очередь |
+| [Сеть и TCP](https://212.22.70.156/grafana/d/vpn-network/) | RX/TX, объём за период, пакеты, ошибки, потери, бюджет канала и TCP retransmits |
+| [Использование VPN](https://212.22.70.156/grafana/d/vpn-usage/) | Входящий и исходящий трафик за период, активные подписки и устройства с индивидуальными профилями. [Как связать устройства с подписками](docs/vpn-usage.md) |
 
 Генератор подробных дашбордов — `scripts/build_dashboards.py`, результат хранится в `monitoring/grafana/dashboards/*.json`. Обновление без перезапуска Grafana, Prometheus и VPN:
 

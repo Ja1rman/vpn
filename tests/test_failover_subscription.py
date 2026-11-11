@@ -20,6 +20,8 @@ class FailoverSubscriptionTests(unittest.TestCase):
         self.compatible = (f"vless://{self.uuid}@203.0.113.8:33173?{self.query}"
                            "#mc-ubuntu-breeze-reef-android-fixture")
         self.legacy = self.compatible.replace(":33173", ":33172")
+        self.plain = (f"vless://{self.uuid}@203.0.113.8:46738?type=tcp&security=none"
+                      "&encryption=none&headerType=none#x-ui-fixture")
 
     @staticmethod
     def wrapped(*lines):
@@ -44,7 +46,7 @@ class FailoverSubscriptionTests(unittest.TestCase):
             self.assertEqual(fetch.call_count, 2)
 
     def test_mixed_feed_yields_only_one_profile_with_credentials_unchanged(self):
-        original = self.wrapped("ss://fixture@example.invalid", self.legacy, self.compatible)
+        original = self.wrapped("ss://fixture@example.invalid", self.legacy, self.compatible, self.plain)
         body = feed.rewrite_profile(original, self.settings)
         lines = base64.b64decode(body).decode().splitlines()
         self.assertEqual(len(lines), 1)
@@ -54,6 +56,29 @@ class FailoverSubscriptionTests(unittest.TestCase):
         self.assertEqual(new.query, self.query)
         self.assertEqual(unquote(new.fragment), "VPN Авто")
         self.assertEqual(feed.rewrite_profile(self.compatible.encode(), self.settings), body)
+
+    def test_new_xui_client_gets_a_single_trusted_tls_profile(self):
+        body = feed.rewrite_profile(self.wrapped(self.legacy, self.plain), self.settings)
+        lines = base64.b64decode(body).decode().splitlines()
+        self.assertEqual(len(lines), 1)
+        new = urlsplit(lines[0])
+        self.assertEqual((new.scheme, new.hostname, new.port), ("vless", "203.0.113.8", 33175))
+        self.assertEqual(new.username, self.uuid)
+        self.assertEqual(new.query, "type=tcp&security=tls&encryption=none&packetEncoding=xudp")
+        self.assertEqual(unquote(new.fragment), "VPN Авто")
+
+    def test_tls_fallback_never_uses_an_unverified_or_ambiguous_source(self):
+        with self.assertRaises(feed.MissingSubscription):
+            feed.rewrite_profile(self.wrapped(self.plain.replace("203.0.113.8", "example.invalid")), self.settings)
+        for links in (
+                [self.plain, self.plain],
+                [self.plain.replace("type=tcp", "type=ws")],
+                [self.plain.replace("security=none", "security=tls")],
+                [self.plain.replace("#x-ui", "&flow=xtls-rprx-vision#x-ui")],
+                [self.plain, self.compatible.replace("security=reality", "security=none")],
+        ):
+            with self.assertRaises(feed.InvalidSubscription):
+                feed.rewrite_profile(self.wrapped(*links), self.settings)
 
     def test_missing_duplicate_and_invalid_compatible_profiles_fail_closed(self):
         with self.assertRaises(feed.MissingSubscription):

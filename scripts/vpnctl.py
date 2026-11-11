@@ -67,6 +67,24 @@ def refresh_grafana():
     remote(name,'sudo python3 '+shlex.join([stage+'/rename_grafana_user.py',stage+'/payload']))
     remote(name,'sudo bash '+shlex.join([stage+'/refresh_grafana.sh',stage+'/payload']))
 
+def deploy_grafana_https():
+    import shutil
+    import tempfile
+
+    entry = inventory()['entry']
+    template = ROOT / 'monitoring/nginx-grafana-https.conf'
+    with tempfile.TemporaryDirectory(prefix='grafana-https-', dir=ROOT / '.local') as tmp:
+        folder = Path(tmp)
+        shutil.copyfile(template, folder / template.name)
+        stage = upload(entry['name'], folder, ['install_grafana_https.py'])
+        try:
+            remote(entry['name'], 'sudo python3 ' + shlex.join([
+                stage + '/install_grafana_https.py', 'install', stage + '/payload/' + template.name,
+                '--address', entry['address'],
+            ]))
+        finally:
+            remote(entry['name'], 'sudo rm -rf -- ' + shlex.quote(stage))
+
 def deploy_vpn_usage():
     import shutil
     import tempfile
@@ -166,6 +184,26 @@ def update_failover_pool():
     remote(inventory()['entry']['name'],'sudo python3 '+shlex.join([
         stage+'/update_failover_pool.py',stage+'/payload/hosts.json']))
 
+def deploy_auto_onboarding():
+    import tempfile
+
+    name = inventory()['entry']['name']
+    with tempfile.TemporaryDirectory(prefix='auto-onboarding-', dir=ROOT / '.local') as tmp:
+        stage = upload(name, Path(tmp), ['install_auto_tls_frontend.py', 'verify_auto_onboarding.py',
+                                         'install_failover_subscription.py', 'failover_subscription.py'])
+        try:
+            actions = [
+                ['python3', '-B', f'{stage}/install_auto_tls_frontend.py', 'install'],
+                ['python3', '-B', f'{stage}/verify_auto_onboarding.py'],
+                ['python3', '-B', f'{stage}/install_failover_subscription.py', 'upgrade'],
+            ]
+            command = ' && '.join(shlex.join(action) for action in actions)
+            remote(name, 'sudo ' + shlex.join([
+                'flock', '-n', '/run/lock/vpn-auto-onboarding.lock', 'bash', '-c', command,
+            ]))
+        finally:
+            remote(name, 'sudo rm -rf -- ' + shlex.quote(stage))
+
 def refresh_failover_monitoring():
     import shutil
     folder=ROOT/'.local/failover-monitoring'
@@ -179,13 +217,14 @@ def refresh_failover_monitoring():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','refresh-failover-monitoring','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
     elif args.command=='deploy-node':deploy_node(args.name)
     elif args.command=='deploy-monitoring':deploy_monitoring()
     elif args.command=='refresh-grafana':refresh_grafana()
+    elif args.command=='deploy-grafana-https':deploy_grafana_https()
     elif args.command=='deploy-vpn-usage':deploy_vpn_usage()
     elif args.command=='refresh-alertmanager':refresh_alertmanager()
     elif args.command=='deploy-balancer':deploy_balancer()
@@ -197,6 +236,7 @@ def main():
     elif args.command=='refresh-probes':refresh_probes()
     elif args.command=='stage-failover':print(stage_failover())
     elif args.command=='update-failover-pool':update_failover_pool()
+    elif args.command=='deploy-auto-onboarding':deploy_auto_onboarding()
     elif args.command=='refresh-failover-monitoring':refresh_failover_monitoring()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)
     elif args.command=='tunnel':

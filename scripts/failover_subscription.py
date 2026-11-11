@@ -14,7 +14,7 @@ import re
 import socket
 import ssl
 from threading import BoundedSemaphore, Lock, Timer
-from urllib.parse import parse_qs, quote, unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 
@@ -44,6 +44,8 @@ class Settings:
     source_port: int = 33173
     target_port: int = 33174
     title: str = "VPN Auto"
+    tls_source_port: int = 46738
+    tls_target_port: int = 33175
 
 
 def header_value(value):
@@ -53,7 +55,7 @@ def header_value(value):
 
 
 def rewrite_profile(body, settings):
-    """Validate exactly one compatible share link and return it as Base64."""
+    """Preserve the existing REALITY link or derive TLS from the x-ui VLESS profile."""
     if not body.strip():
         raise MissingSubscription()
     if len(body) > MAX_BODY:
@@ -92,15 +94,49 @@ def rewrite_profile(body, settings):
         except (TypeError, ValueError):
             raise InvalidSubscription() from None
         matching.append(parsed)
+    if len(matching) > 1:
+        raise InvalidSubscription()
+    title = quote(settings.title, safe="")
+    if matching:
+        selected = matching[0]
+        authority = selected.netloc.rsplit(":", 1)[0] + ":" + str(settings.target_port)
+        url = urlunsplit((selected.scheme, authority, selected.path, selected.query, title))
+    else:
+        url = tls_profile(lines, settings, title)
+    return base64.b64encode((url + "\n").encode())
+
+
+def tls_profile(lines, settings, title):
+    matching = []
+    for line in lines:
+        if not line.startswith("vless://"):
+            continue
+        try:
+            parsed = urlsplit(line)
+            if parsed.hostname != settings.address.lower() or parsed.port != settings.tls_source_port:
+                continue
+            if parsed.password is not None or parsed.path or not parsed.username:
+                raise InvalidSubscription()
+            uid = str(UUID(parsed.username))
+            query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=32)
+            if (query.get("type") not in (["tcp"], ["raw"])
+                    or query.get("security", ["none"]) != ["none"]
+                    or query.get("encryption", ["none"]) != ["none"]
+                    or query.get("flow", [""]) != [""]
+                    or query.get("headerType", ["none"]) != ["none"]):
+                raise InvalidSubscription()
+            matching.append((uid, parsed.netloc.rsplit("@", 1)[1].rsplit(":", 1)[0]))
+        except (TypeError, ValueError):
+            raise InvalidSubscription() from None
     if not matching:
         raise MissingSubscription()
     if len(matching) != 1:
         raise InvalidSubscription()
-    selected = matching[0]
-    authority = selected.netloc.rsplit(":", 1)[0] + ":" + str(settings.target_port)
-    url = urlunsplit((selected.scheme, authority, selected.path, selected.query,
-                      quote(settings.title, safe="")))
-    return base64.b64encode((url + "\n").encode())
+    uid, address = matching[0]
+    authority = f"{uid}@{address}:{settings.tls_target_port}"
+    query = urlencode({"type": "tcp", "security": "tls", "encryption": "none",
+                       "packetEncoding": "xudp"})
+    return urlunsplit(("vless", authority, "", query, title))
 
 
 class LoopbackHTTPSConnection(http.client.HTTPSConnection):

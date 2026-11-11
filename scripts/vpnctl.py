@@ -138,7 +138,7 @@ def stage_failover():
         return upload(inv['entry']['name'],folder,[
             'failover_variant.py','priority_pool.py','verify_priority_backup.py','verify_vpn.py',
             'enable_failover_variant.py','failover_subscription.py','install_failover_subscription.py',
-            'update_failover_pool.py'])
+            'update_failover_pool.py','auto_ru_routes.py','enable_auto_ru.py'])
 
 def update_failover_pool():
     stage=stage_failover()

@@ -38,9 +38,17 @@ def main():
             raise RuntimeError('Unsupported outbound schema for isolated test')
         primary['settings'].update(address='127.0.0.1', port=free_port())
     socks_port = free_port()
+    sniff_port = None
     for inbound in config['inbounds']:
         inbound['port'] = socks_port if inbound['tag'] == 'pool-socks' else free_port()
         inbound['listen'] = '127.0.0.1'
+        if inbound['tag'] == 'pool-ip-sniff':
+            sniff_port = inbound['port']
+    for outbound in config['outbounds']:
+        if outbound['tag'] == 'vpn-auto-sniff-hop':
+            if sniff_port is None:
+                raise RuntimeError('Isolated sniff listener is missing')
+            outbound['settings']['port'] = sniff_port
     config['observatory']['probeInterval'] = '1s'
     config['log']['loglevel'] = 'info'
     with tempfile.TemporaryDirectory(prefix='vpn-real-backup-') as tmp:

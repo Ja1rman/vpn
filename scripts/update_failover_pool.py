@@ -23,6 +23,7 @@ import tempfile
 import time
 from urllib.parse import urlsplit
 
+from auto_ru_routes import BASE_RULES, DIRECT_TAG, SNIFF_TAG, add_direct_ru
 from failover_variant import MAIN, OLD_POOL, build_pool
 from priority_pool import build_priority_chain
 
@@ -35,11 +36,6 @@ BACKUPS = Path('/var/backups/vpn-infra')
 SOCKS = 11092
 API = 11093
 BLOCKED = {'tag': 'blocked', 'protocol': 'blackhole', 'settings': {}}
-BASE_RULES = [
-    {'type': 'field', 'inboundTag': ['api'], 'outboundTag': 'api'},
-    {'type': 'field', 'ip': ['geoip:private'], 'outboundTag': 'blocked'},
-    {'type': 'field', 'inboundTag': ['pool-socks'], 'balancerTag': 'vpn-pool'},
-]
 
 
 def require(ok, message):
@@ -59,13 +55,22 @@ def config_sites(config):
             o.get('streamSettings', {}).get('security') in ('tls', 'reality') for o in sites),
             'VPN Auto must have at least two encrypted VLESS sites')
     bridges, rules, balancers = build_priority_chain([o['tag'] for o in sites])
-    require(outbounds == [BLOCKED] + sites + bridges and config['routing'] == {
-        'domainStrategy': 'AsIs', 'rules': BASE_RULES + rules, 'balancers': balancers,
-    }, 'Unexpected VPN Auto topology; hot update refused')
-    listeners = {i['tag']: (i.get('listen'), i.get('port')) for i in config['inbounds']}
-    require(len(config['inbounds']) == 2 and listeners == {
+    inbounds = [i for i in config['inbounds'] if i['tag'] != SNIFF_TAG]
+    listeners = {i['tag']: (i.get('listen'), i.get('port')) for i in inbounds}
+    require(len(inbounds) == 2 and listeners == {
         'api': ('127.0.0.1', API), 'pool-socks': ('127.0.0.1', SOCKS),
     }, 'This configuration is not the isolated VPN Auto pool')
+    expected = dict(config, inbounds=inbounds, outbounds=[BLOCKED] + sites + bridges,
+                    routing={'domainStrategy': 'AsIs', 'rules': BASE_RULES + rules, 'balancers': balancers})
+    direct = [o for o in outbounds if o['tag'] == DIRECT_TAG]
+    if direct:
+        try:
+            block = direct[0]['settings']['finalRules'][0]['ip'][1]
+            address = block.removesuffix('/32')
+            expected = add_direct_ru(expected, address)
+        except (ValueError, IndexError, KeyError, TypeError, AttributeError):
+            raise RuntimeError('Unexpected VPN Auto direct topology; hot update refused') from None
+    require(expected == config, 'Unexpected VPN Auto topology; hot update refused')
     return sites
 
 

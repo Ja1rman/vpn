@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 
+from auto_ru_routes import BASE_RULES, SNIFF_PORT, SNIFF_TAG, add_direct_ru
 from priority_pool import build_priority_chain
 
 ROOT = Path('/etc/vpn-failover')
@@ -78,15 +79,14 @@ def build_pool(settings, main, old, private_folder=None):
         raise ValueError('At least two independent egress addresses required')
     bridges, rules, balancers = build_priority_chain([o['tag'] for o in outbounds])
     config['outbounds'] = [{'tag': 'blocked', 'protocol': 'blackhole', 'settings': {}}] + outbounds + bridges
-    config['routing'] = {'domainStrategy': 'AsIs', 'rules': [
-        {'type': 'field', 'inboundTag': ['api'], 'outboundTag': 'api'},
-        {'type': 'field', 'ip': ['geoip:private'], 'outboundTag': 'blocked'},
-        {'type': 'field', 'inboundTag': ['pool-socks'], 'balancerTag': 'vpn-pool'},
-    ] + rules, 'balancers': balancers}
+    config['routing'] = {'domainStrategy': 'AsIs', 'rules': copy.deepcopy(BASE_RULES) + rules,
+                         'balancers': balancers}
     config['observatory'] = {'subjectSelector': ['pool-site-'], 'probeUrl': settings['probe_urls'][0],
                              'probeInterval': '10s', 'enableConcurrency': True}
     config['policy']['system'].update(statsInboundUplink=True, statsInboundDownlink=True)
     config['log'] = {'loglevel': 'warning', 'access': 'none'}
+    if 'direct_ru_ipv4' in settings:
+        config = add_direct_ru(config, settings['direct_ru_ipv4'])
     return config, names
 
 
@@ -168,7 +168,9 @@ def install(kind, config):
         return
     if command(['systemctl', 'show', unit, '-p', 'LoadState', '--value']).strip() != b'not-found':
         raise RuntimeError('Service name already in use')
-    for port in PORTS[kind]:
+    ports = PORTS[kind] + ((SNIFF_PORT,) if kind == 'pool' and
+                           any(i.get('tag') == SNIFF_TAG for i in config['inbounds']) else ())
+    for port in ports:
         with socket.socket() as sock:
             sock.bind(('0.0.0.0' if kind == 'entry' else '127.0.0.1', port))
     ROOT.mkdir(mode=0o700, exist_ok=True)
@@ -196,7 +198,7 @@ def install(kind, config):
         command(['systemctl', 'enable', '--now', unit])
         for attempt in range(20):
             try:
-                for port in PORTS[kind]:
+                for port in ports:
                     with socket.create_connection(('127.0.0.1', port), timeout=1):
                         pass
                 break
@@ -215,7 +217,7 @@ def install(kind, config):
             shutil.rmtree(p) if p.is_dir() else p.unlink()
         subprocess.run(['systemctl', 'daemon-reload'], capture_output=True, timeout=20)
         raise
-    print(unit + ' started on ' + ','.join(map(str, PORTS[kind])))
+    print(unit + ' started on ' + ','.join(map(str, ports)))
 
 
 def main():

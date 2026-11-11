@@ -45,6 +45,7 @@
     ]
   },
   "failover": {
+    "direct_ru_ipv4": "212.22.70.156",
     "egresses": [
       {"name": "ihor", "address": "45.9.74.57", "source": "main", "tag": "ihor-vless-1-5jj7e3veas"},
       {"name": "breeze-reef", "address": "144.31.34.165", "source": "legacy", "tag": "pool-breeze-reef-tcp-v1"},

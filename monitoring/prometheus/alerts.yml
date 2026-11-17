@@ -32,6 +32,19 @@ groups:
         annotations:
           summary: 'Сервер {{ $labels.host }}: метрики недоступны'
           description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
+      # Keep the outage visible for its whole duration, but notify by email only near its start.
+      - alert: NodeUnavailableNotification
+        expr: |
+          min by (host) (
+            ALERTS_FOR_STATE{alertname="NodeUnavailable",host!=""}
+            and on (host, instance) ALERTS{alertname="NodeUnavailable",alertstate="firing",host!=""}
+          ) > (time() - 20 * 60)
+        labels:
+          severity: warning
+          incident_start: '{{ $value | printf "%.0f" }}'
+        annotations:
+          summary: 'Сервер {{ $labels.host }}: метрики недоступны'
+          description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
       - alert: VpnPortUnavailable
         expr: |
           (probe_success{job="vpn-tcp"} == 0)

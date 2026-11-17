@@ -64,6 +64,45 @@ tests:
       - eval_time: 7m
         alertname: VpnFailoverUnavailable
         exp_alerts: []
+  - name: node-email-window-closes-without-resolving-an-ongoing-outage
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",host="exit-a",instance="exit-a:19100"}'
+        values: '0x30 1x8 0x24'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: NodeUnavailableNotification
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: NodeUnavailableNotification
+        exp_alerts: &first_outage_email
+          - exp_labels: {host: exit-a, incident_start: '0', severity: warning}
+            exp_annotations:
+              summary: 'Сервер exit-a: метрики недоступны'
+              description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
+      - eval_time: 19m
+        alertname: NodeUnavailableNotification
+        exp_alerts: *first_outage_email
+      - eval_time: 20m
+        alertname: NodeUnavailableNotification
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: NodeUnavailableNotification
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: NodeUnavailable
+        exp_alerts:
+          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:19100', severity: warning}
+            exp_annotations:
+              summary: 'Сервер exit-a: метрики недоступны'
+              description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
+      - eval_time: 43m
+        alertname: NodeUnavailableNotification
+        exp_alerts:
+          - exp_labels: {host: exit-a, incident_start: '2400', severity: warning}
+            exp_annotations:
+              summary: 'Сервер exit-a: метрики недоступны'
+              description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
   - name: frontend-and-subscription-fail-independently
     interval: 1m
     input_series:

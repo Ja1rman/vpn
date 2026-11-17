@@ -205,7 +205,7 @@ python3 scripts/vpnctl.py refresh-grafana
 
 | Алерт | Условие |
 |---|---|
-| `NodeUnavailable` | exporter недоступен 2 минуты |
+| `NodeUnavailable` | exporter недоступен 2 минуты. Одно письмо на получателя за сбой, статус виден до восстановления. [Настройка уведомлений](docs/email.md) |
 | `VpnPortUnavailable` | TCP-порт недоступен 3 минуты; предупреждение |
 | `VpnLegacyEgressUnavailable` | старый пул не проходит обе HTTPS-проверки 3 минуты; предупреждение |
 | `VpnFailoverUnavailable` | новый вход или авторизация не отвечают либо не проходят обе HTTPS-проверки нового пула 2 минуты; критический |

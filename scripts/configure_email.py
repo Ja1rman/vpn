@@ -7,8 +7,9 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import tempfile
 
-from vpnctl import ROOT, inventory, remote, refresh_alertmanager
+from vpnctl import ROOT, inventory, remote, upload
 
 
 def build_config(settings, base):
@@ -28,26 +29,32 @@ def build_config(settings, base):
         raise ValueError('Use implicit TLS465 or STARTTLS587')
     # Fail closed if the tracked routing template changes; preserve all grouping,
     # inhibition and timing rules verbatim rather than reconstructing them.
-    if base.count('  resolve_timeout: 5m\n') != 1 or \
-            base.count('  receiver: web-only\n') != 1 or base.count('  - name: web-only\n') != 1:
+    if any(base.count(line) != 1 for line in ('  resolve_timeout: 5m\n', '\n  receiver: web-only\n',
+                                              '\n  - name: web-only\n', '\n  - name: node-outage\n')):
         raise ValueError('Unexpected Alertmanager base template; review routing first')
     smtp = {'smtp_smarthost': settings['host'] + ':' + str(port),
             'smtp_from': sender, 'smtp_auth_username': settings['username'],
             'smtp_auth_password': settings['password']}
     global_lines = ''.join('  ' + key + ': ' + json.dumps(value) + '\n' for key, value in smtp.items())
     global_lines += '  smtp_require_tls: true\n'
-    title = '[VPN][{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} / {{ .CommonLabels.host }}'
+    title = ('[VPN][{{ .Status | toUpper }}] {{ if eq .CommonLabels.alertname "NodeUnavailableNotification" }}'
+             'NodeUnavailable{{ else }}{{ .CommonLabels.alertname }}{{ end }} / {{ .CommonLabels.host }}')
     text = ('{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}\n'
             'Status: {{ .Status }}\n{{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }}\n{{ end }}\n{{ end }}')
-    receiver = '  - name: email\n    email_configs:\n'
-    for address in recipients:
-        receiver += ('      - to: ' + json.dumps(address) + '\n        send_resolved: true\n'
-                     '        force_implicit_tls: ' + ('true' if port == 465 else 'false') + '\n'
-                     '        headers:\n          Subject: ' + json.dumps(title) + '\n'
-                     '        text: ' + json.dumps(text) + '\n')
+    def email_configs(send_resolved):
+        return '    email_configs:\n' + ''.join(
+            '      - to: ' + json.dumps(address) + '\n'
+            '        send_resolved: ' + json.dumps(send_resolved) + '\n'
+            '        force_implicit_tls: ' + json.dumps(port == 465) + '\n'
+            '        headers:\n          Subject: ' + json.dumps(title) + '\n'
+            '        text: ' + json.dumps(text) + '\n'
+            for address in recipients
+        )
+
     return base.replace('  resolve_timeout: 5m\n', '  resolve_timeout: 5m\n' + global_lines) \
-               .replace('  receiver: web-only\n', '  receiver: email\n') \
-               .replace('  - name: web-only\n', receiver)
+               .replace('\n  receiver: web-only\n', '\n  receiver: email\n') \
+               .replace('\n  - name: web-only\n', '\n  - name: web-only\n  - name: email\n' + email_configs(True)) \
+               .replace('\n  - name: node-outage\n', '\n  - name: node-outage\n' + email_configs(False))
 
 
 def check_auth(settings):
@@ -68,6 +75,23 @@ except Exception as e:
     remote(inventory()['entry']['name'], 'python3 -c ' + shlex.quote(code), json.dumps(settings).encode())
 
 
+def apply_alerting(config):
+    entry = inventory()['entry']['name']
+    with tempfile.TemporaryDirectory(prefix='alerting-', dir=ROOT / '.local') as tmp:
+        folder = Path(tmp)
+        for name in ('alertmanager', 'prometheus'):
+            (folder / name).mkdir()
+        (folder / 'alertmanager/alertmanager.yml').write_text(config)
+        (folder / 'prometheus/alerts.yml').write_bytes((ROOT / 'monitoring/prometheus/alerts.yml').read_bytes())
+        stage = upload(entry, folder, ['refresh_failover_alerts.py'])
+        try:
+            remote(entry, 'sudo python3 -B ' + shlex.join([
+                stage + '/refresh_failover_alerts.py', stage + '/payload', '--alerting-only', '--apply',
+            ]))
+        finally:
+            remote(entry, 'sudo rm -rf -- ' + shlex.quote(stage))
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -80,13 +104,12 @@ def main():
     config = build_config(settings, (ROOT / 'monitoring/alertmanager/alertmanager.yml').read_text())
     if args.apply:
         check_auth(settings)
+        apply_alerting(config)
     for path in [ROOT / '.local/alertmanager.yml', ROOT / '.local/rendered/monitoring/alertmanager/alertmanager.yml']:
         path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         path.write_text(config)
         path.chmod(0o600)
     print('Private email configuration rendered; credentials and recipients are not printed')
-    if args.apply:
-        refresh_alertmanager()
     if args.publish_secret:
         subprocess.run(['gh', 'secret', 'set', 'VPN_ALERTMANAGER_CONFIG', '--repo', 'Ja1rman/vpn',
                         '--env', 'production'], input=config.encode(), check=True, stdout=subprocess.DEVNULL)

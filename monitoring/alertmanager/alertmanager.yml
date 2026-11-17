@@ -6,9 +6,20 @@ route:
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
+  routes:
+    - receiver: web-only
+      matchers: ['alertname="NodeUnavailable"']
+    - receiver: node-outage
+      matchers: ['alertname="NodeUnavailableNotification"']
+      group_by: [host, incident_start]
 receivers:
   - name: web-only
+  - name: node-outage
 inhibit_rules:
   - source_matchers: ['alertname="NodeUnavailable"']
     target_matchers: ['severity="warning"', 'alertname=~"VpnPortUnavailable|HighCPU|HighMemory|DiskSpaceLow|HighNetworkTraffic"']
     equal: [host]
+  # The legacy pool uses breeze-reef only. Keep independent VPN Auto alerts active.
+  - source_matchers: ['alertname="NodeUnavailable"', 'host="breeze-reef"']
+    target_matchers: ['alertname="VpnLegacyEgressUnavailable"', 'host="entry"', 'service="legacy"']
+    equal: [cluster]

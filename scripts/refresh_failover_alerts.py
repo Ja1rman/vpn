@@ -125,21 +125,26 @@ def validate_file_sd(data):
 
 
 def validate(candidates):
-    docker('exec', container('blackbox'), '/bin/blackbox_exporter', '--config.check',
-           f"--config.file={candidates['blackbox.yml']}")
+    if 'blackbox.yml' in candidates:
+        docker('exec', container('blackbox'), '/bin/blackbox_exporter', '--config.check',
+               f"--config.file={candidates['blackbox.yml']}")
     docker('exec', container('prometheus'), '/bin/promtool', 'check', 'rules',
            str(candidates['prometheus/alerts.yml']))
-    docker('exec', container('prometheus'), '/bin/promtool', 'check', 'config',
-           str(candidates['prometheus/prometheus.yml']))
+    if 'prometheus/prometheus.yml' in candidates:
+        docker('exec', container('prometheus'), '/bin/promtool', 'check', 'config',
+               str(candidates['prometheus/prometheus.yml']))
     docker('exec', container('alertmanager'), 'amtool', 'check-config',
            str(candidates[ALERTMANAGER]))
 
 
-def refresh(stage, apply, include_nodes):
-    names = (*FILES, *(['prometheus/nodes.json'] if include_nodes else []), ALERTMANAGER)
+def refresh(stage, apply, include_nodes, alerting_only=False):
+    names = ((ALERTMANAGER, 'prometheus/alerts.yml') if alerting_only else
+             (*FILES, *(['prometheus/nodes.json'] if include_nodes else []), ALERTMANAGER))
     existing = {name: read_regular(ROOT / name) for name in names}
-    proposed = {name: read_regular(stage / name)[0] for name in names if name != ALERTMANAGER}
-    proposed[ALERTMANAGER] = merge_alertmanager(existing[ALERTMANAGER][0])
+    proposed = {name: read_regular(stage / name)[0] for name in names
+                if alerting_only or name != ALERTMANAGER}
+    if not alerting_only:
+        proposed[ALERTMANAGER] = merge_alertmanager(existing[ALERTMANAGER][0])
     for name in proposed:
         if name.endswith('.json'):
             validate_file_sd(proposed[name])
@@ -204,10 +209,13 @@ def main():
     parser.add_argument('stage', type=Path, help='staged monitoring tree (the payload directory)')
     parser.add_argument('--apply', action='store_true', help='install and reload after validation')
     parser.add_argument('--include-nodes', action='store_true', help='also update node exporter discovery')
+    parser.add_argument('--alerting-only', action='store_true', help='update only Prometheus rules and Alertmanager routing')
     args = parser.parse_args()
+    if args.include_nodes and args.alerting_only:
+        parser.error('--alerting-only cannot change node discovery')
     with Path('/run/lock/vpn-failover-monitoring.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        print(json.dumps(refresh(args.stage, args.apply, args.include_nodes)))
+        print(json.dumps(refresh(args.stage, args.apply, args.include_nodes, args.alerting_only)))
 
 
 if __name__ == '__main__':

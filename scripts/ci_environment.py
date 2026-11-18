@@ -27,8 +27,15 @@ def inventory():
 
 def outbound_paths(inv):
     paths = {p for node in inv['nodes'] for p in node['outbounds']}
+    reserves = inv.get('balancer', {}).get('reserve_outbounds', [])
+    if not isinstance(reserves, list):
+        raise ValueError('reserve_outbounds must be a list')
+    for reserve in reserves:
+        if not isinstance(reserve, dict) or not isinstance(reserve.get('file'), str):
+            raise ValueError('Reserve outbound file must be specified')
+        paths.add(reserve['file'])
     for path in paths:
-        if not re.fullmatch(r'\.local/outbounds/[a-zA-Z0-9_.-]+\.json', path):
+        if not isinstance(path, str) or not re.fullmatch(r'\.local/outbounds/[a-zA-Z0-9_.-]+\.json', path):
             raise ValueError('CI requires outbound files directly under .local/outbounds/')
     return paths
 

@@ -13,8 +13,69 @@ from activate_balancer import change_template
 from migrate_direct_inbounds import add_routes, TARGETS
 import migrate_direct_inbounds as migration
 from priority_pool import build_priority_chain
+from ci_environment import outbound_paths
 
 class SafetyInvariants(unittest.TestCase):
+    def test_private_reserves_follow_original_fallbacks_without_monitoring_nodes(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(render, 'ROOT', Path(tmp)):
+            private = render.ROOT / '.local/outbounds'
+            private.mkdir(parents=True)
+            for name in ('main', 'original-backup', 'reserve'):
+                (private / (name + '.json')).write_text(json.dumps({
+                    'protocol': 'vless', 'settings': {'address': '203.0.113.1', 'id': name}}))
+            inv = {'entry': {'name': 'entry'},
+                   'nodes': [{'name': 'existing', 'address': '203.0.113.1', 'outbounds': [
+                       '.local/outbounds/main.json', '.local/outbounds/original-backup.json']}],
+                   'monitoring': {'node_port': 19100},
+                   'balancer': {'strategy': 'priority', 'socks_port': 11090, 'api_port': 11091,
+                                'probe_interval': '10s', 'probe_url': 'https://example.com/',
+                                'priority_order': ['pool-existing-1']}}
+            baseline = render.build_balancer(inv)
+            monitoring = render.prometheus_config(inv)
+            inv['balancer']['reserve_outbounds'] = [
+                {'name': 'ihor', 'file': '.local/outbounds/reserve.json'}]
+            config = render.build_balancer(inv)
+            self.assertEqual(outbound_paths(inv), {'.local/outbounds/main.json',
+                                                   '.local/outbounds/original-backup.json',
+                                                   '.local/outbounds/reserve.json'})
+            self.assertEqual(config['outbounds'][:3], baseline['outbounds'][:3])
+            self.assertEqual([b['selector'] for b in config['routing']['balancers']],
+                             [['pool-existing-1'], ['pool-existing-0'], ['pool-reserve-ihor']])
+            self.assertEqual(config['routing']['balancers'][-1]['fallbackTag'], 'blocked')
+            self.assertEqual(render.prometheus_config(inv), monitoring)
+            snapshot = copy.deepcopy(inv)
+            for key, value in [('strategy', 'roundRobin'), ('priority_order', ['pool-reserve-ihor'])]:
+                candidate = copy.deepcopy(snapshot)
+                candidate['balancer'][key] = value
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    render.build_balancer(candidate)
+            for reserve in [
+                {'name': 'Bad Name', 'file': '.local/outbounds/reserve.json'},
+                {'name': 'ihor', 'file': str(private / 'reserve.json')},
+                {'name': 'ihor', 'file': '.local/outbounds/../reserve.json'},
+                {'name': 'ihor', 'file': 'reserve.json'},
+            ]:
+                candidate = copy.deepcopy(snapshot)
+                candidate['balancer']['reserve_outbounds'] = [reserve]
+                with self.subTest(reserve=reserve), self.assertRaises(ValueError):
+                    render.build_balancer(candidate)
+                if reserve['name'] == 'ihor':
+                    with self.subTest(ci_reserve=reserve), self.assertRaises(ValueError):
+                        outbound_paths(candidate)
+            inv['balancer']['reserve_outbounds'] *= 2
+            with self.assertRaises(ValueError):
+                render.build_balancer(inv)
+            inv = copy.deepcopy(snapshot)
+            (private / 'reserve.json').write_text(json.dumps({'protocol': 'freedom'}))
+            with self.assertRaises(ValueError):
+                render.build_balancer(inv)
+            outside = render.ROOT / 'outside.json'
+            outside.write_text(json.dumps({'protocol': 'vless'}))
+            (private / 'reserve.json').unlink()
+            (private / 'reserve.json').symlink_to(outside)
+            with self.assertRaises(ValueError):
+                render.build_balancer(inv)
+
     def test_priority_can_change_without_changing_outbound_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(render,'ROOT',Path(tmp)):

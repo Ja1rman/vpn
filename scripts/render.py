@@ -11,6 +11,7 @@ import subprocess
 from priority_pool import build_priority_chain
 
 ROOT = Path(__file__).resolve().parents[1]
+ENCRYPTED_PROTOCOLS = {"vless", "hysteria", "trojan", "shadowsocks", "vmess"}
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -24,7 +25,7 @@ def build_balancer(inventory):
             raise ValueError('outbound_tags must reference files of its own node')
         for index, filename in enumerate(node["outbounds"]):
             outbound = json.loads((ROOT / filename).read_text())
-            if outbound.get("protocol") not in {"vless", "hysteria", "trojan", "shadowsocks", "vmess"}:
+            if outbound.get("protocol") not in ENCRYPTED_PROTOCOLS:
                 raise ValueError("Only encrypted remote proxies may enter the VPN pool")
             tag = overrides.get(filename, f"pool-{node['name']}-{index}")
             if not isinstance(tag, str) or not re.fullmatch(r'pool-[a-zA-Z0-9_-]+', tag):
@@ -36,6 +37,33 @@ def build_balancer(inventory):
     settings = inventory["balancer"]
     if settings["strategy"] not in {"priority", "roundRobin", "leastPing"}:
         raise ValueError("strategy must be priority, roundRobin or leastPing")
+    original_tags = [o['tag'] for o in outbounds]
+    reserves = settings.get('reserve_outbounds', [])
+    if not isinstance(reserves, list) or (reserves and settings['strategy'] != 'priority'):
+        raise ValueError('reserve_outbounds must be a list and requires priority mode')
+    reserve_tags = []
+    private = (ROOT / '.local/outbounds').resolve()
+    for reserve in reserves:
+        if not isinstance(reserve, dict) or set(reserve) != {'name', 'file'}:
+            raise ValueError('Each reserve outbound requires name and file')
+        name, filename = reserve['name'], reserve['file']
+        if not isinstance(name, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,40}', name):
+            raise ValueError('Invalid reserve outbound name')
+        tag = 'pool-reserve-' + name
+        if tag in reserve_tags or tag in original_tags:
+            raise ValueError('Duplicate reserve outbound name or tag')
+        if not isinstance(filename, str):
+            raise ValueError('Reserve outbound file must be under .local/outbounds')
+        path = Path(filename)
+        if path.parts[:2] != ('.local', 'outbounds') or '..' in path.parts or path.suffix != '.json' \
+                or not (ROOT / path).resolve().is_relative_to(private):
+            raise ValueError('Reserve outbound file must be under .local/outbounds')
+        outbound = json.loads((ROOT / path).read_text())
+        if outbound.get('protocol') not in ENCRYPTED_PROTOCOLS:
+            raise ValueError('Only encrypted remote proxies may enter the VPN pool')
+        outbound['tag'] = tag
+        outbounds.append(outbound)
+        reserve_tags.append(tag)
     config = {
         "log": {"loglevel": "warning"},
         "inbounds": [
@@ -58,12 +86,11 @@ def build_balancer(inventory):
         "observatory": {"subjectSelector": ["pool-"], "probeUrl": settings["probe_url"], "probeInterval": settings["probe_interval"], "enableConcurrency": True}
     }
     if settings['strategy'] == 'priority':
-        tags = [o['tag'] for o in outbounds]
         preferred = settings.get('priority_order', [])
         if not isinstance(preferred, list) or any(not isinstance(tag, str) for tag in preferred) or \
-                len(set(preferred)) != len(preferred) or any(tag not in tags for tag in preferred):
-            raise ValueError('priority_order must contain unique, existing outbound tags')
-        order = preferred + [tag for tag in tags if tag not in preferred]
+                len(set(preferred)) != len(preferred) or any(tag not in original_tags for tag in preferred):
+            raise ValueError('priority_order must contain unique, existing original outbound tags')
+        order = preferred + [tag for tag in original_tags if tag not in preferred] + reserve_tags
         bridges, rules, balancers = build_priority_chain(order)
         config['outbounds'].extend(bridges)
         config['routing']['rules'].extend(rules)

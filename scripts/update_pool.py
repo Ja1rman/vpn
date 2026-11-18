@@ -90,9 +90,17 @@ def main():
             verify_singleton_candidates(desired)
             # Keep removed handlers alive so established sessions can drain.
             persist(desired)
-            subprocess.run(['curl','--fail','--silent','--show-error','--max-time','15','--proxy',
-                            'socks5h://127.0.0.1:11090','https://www.google.com/generate_204'],
-                           stdout=subprocess.DEVNULL,check=True)
+            # New handlers enter Observatory asynchronously after the API update.
+            deadline = time.monotonic() + 40
+            while True:
+                result = subprocess.run(['curl','-q','--fail','--silent','--max-time','6',
+                                         '--noproxy','','--proxy','socks5h://127.0.0.1:11090',
+                                         'https://www.google.com/generate_204'], capture_output=True)
+                if result.returncode == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('Pool did not pass HTTPS after the Observatory update')
+                time.sleep(1)
             udp_dns(11090)
             if subprocess.check_output(['systemctl','show','vpn-balancer','--property=MainPID','--value']).strip()!=before_pid:
                 raise RuntimeError('Balancer PID changed unexpectedly')

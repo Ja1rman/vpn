@@ -42,6 +42,10 @@
     "priority_order": [
       "pool-breeze-reef-0",
       "pool-breeze-reef-tcp-v1"
+    ],
+    "reserve_outbounds": [
+      {"name": "ihor", "file": ".local/outbounds/legacy-reserve-ihor.json"},
+      {"name": "srv-41969", "file": ".local/outbounds/legacy-reserve-srv-41969.json"}
     ]
   },
   "failover": {

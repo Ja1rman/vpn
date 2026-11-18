@@ -9,7 +9,9 @@
 1. Порядок хостов в `nodes`.
 2. Порядок транспортов в `outbounds` каждого хоста.
 
-Текущий основной — `breeze-reef` VLESS/REALITY/XHTTP443 (`pool-breeze-reef-0`). Первый резерв — отдельный VLESS/REALITY TCP8443 (`pool-breeze-reef-tcp-v1`), последний — Hysteria UDP55625 (`pool-breeze-reef-hysteria-v2`). Все три используют физический NL-хост `144.31.34.165`. Для продолжения работы при полном отказе VPS требуется добавить независимый хост; команда `add_host.py` добавляет его в конец списка резервов.
+Текущий основной — `breeze-reef` VLESS/REALITY/XHTTP443 (`pool-breeze-reef-0`). Далее идут VLESS/REALITY TCP8443 (`pool-breeze-reef-tcp-v1`) и Hysteria UDP55625 (`pool-breeze-reef-hysteria-v2`) на том же NL-хосте `144.31.34.165`. После них настроены независимые VLESS-резервы `ihor` и `srv-41969`. Это позволяет обычным профилям продолжать работу при полном отказе NL.
+
+Независимые резервы заданы в `balancer.reserve_outbounds` как `name` и `file`. Файлы находятся в `.local/outbounds/`, содержат зашифрованный outbound и включаются в существующий Secret `VPN_OUTBOUNDS_JSON`. Renderer добавляет их после всех исходных транспортов, с тегами `pool-reserve-<name>`. После изменений выполните `render.py` и `vpnctl.py update-pool`. Проверка новых выходов, обновление маршрутов и откат выполняются через API работающего пула.
 
 С 20 октября порядок явно закреплён `balancer.priority_order`: основной XHTTP, затем TCP. Hysteria и новые узлы добавляются после них в обычном порядке inventory. TCP-резерв добавлен после измерения Hysteria менее 1 Мбит/с; основной XHTTP оказался быстрее TCP и сохранён. [Измерения и Android-профиль](android-and-performance.md).
 

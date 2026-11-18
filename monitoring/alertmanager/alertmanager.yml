@@ -19,7 +19,3 @@ inhibit_rules:
   - source_matchers: ['alertname="NodeUnavailable"']
     target_matchers: ['severity="warning"', 'alertname=~"VpnPortUnavailable|HighCPU|HighMemory|DiskSpaceLow|HighNetworkTraffic"']
     equal: [host]
-  # The legacy pool uses breeze-reef only. Keep independent VPN Auto alerts active.
-  - source_matchers: ['alertname="NodeUnavailable"', 'host="breeze-reef"']
-    target_matchers: ['alertname="VpnLegacyEgressUnavailable"', 'host="entry"', 'service="legacy"']
-    equal: [cluster]

@@ -74,7 +74,7 @@ gh auth login
 python3 scripts/sync_github_secrets.py --repo Ja1rman/vpn
 ```
 
-Скрипт читает текущие файлы `.local/ssh`, `.local/outbounds`, `.local/access.json` и leaf-пары `.local/pki`; общий plaintext-архив не создаёт. GitHub CLI шифрует значения перед отправкой в API. Он создаёт Environment `production` с доступом к развёртыванию только из ветки `main`, обновляет пять обязательных Secrets и логин, затем всегда оставляет `VPN_DEPLOY_ENABLED=false`. После синхронизации для будущего deploy снова включите переменную явно.
+Скрипт читает текущие файлы `.local/ssh`, `.local/outbounds`, `.local/access.json` и leaf-пары `.local/pki`. В `VPN_OUTBOUNDS_JSON` включаются файлы узлов из `nodes[].outbounds` и резервов из `balancer.reserve_outbounds[].file`. GitHub CLI шифрует значения перед отправкой в API. Он создаёт Environment `production` с доступом к развёртыванию только из ветки `main`, обновляет пять обязательных Secrets и логин, затем всегда оставляет `VPN_DEPLOY_ENABLED=false`. После синхронизации для будущего deploy снова включите переменную явно.
 
 Если существует `.local/alertmanager.yml`, его содержимое тоже сохраняется в `VPN_ALERTMANAGER_CONFIG`. Если файла нет, существующий Secret не удаляется. Почта настроена; для её отключения удалите Secret отдельно или загрузите согласованный web-only YAML. После смены получателей/SMTP используйте `configure_email.py --apply --publish-secret`; подробности — [почтовые уведомления](email.md).
 

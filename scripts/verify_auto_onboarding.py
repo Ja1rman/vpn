@@ -76,13 +76,14 @@ def derived_profile(settings):
         for line in source_lines(sub_id, settings, trust):
             if line.startswith('vless://'):
                 link = urlsplit(line)
-                if link.hostname == settings.address and link.port == settings.tls_source_port:
+                if (link.hostname == settings.address
+                        and link.port in (settings.tls_source_port, settings.tls_standard_port)):
                     candidates.append(line)
         if not candidates:
             continue
-        require(len(candidates) == 1, 'The x-ui feed returned ambiguous VLESS sources')
+        require(len(candidates) <= 2, 'The x-ui feed returned ambiguous VLESS sources')
         # Emulate an account that only has the ordinary x-ui VLESS profile.
-        encoded = rewrite_profile(candidates[0].encode(), settings)
+        encoded = rewrite_profile('\n'.join(candidates).encode(), settings)
         link = urlsplit(base64.b64decode(encoded, validate=True).decode().strip())
         options = parse_qs(link.query, keep_blank_values=True)
         require(link.scheme == 'vless' and link.hostname == settings.address and link.port == settings.tls_target_port

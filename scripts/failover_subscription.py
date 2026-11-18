@@ -46,6 +46,7 @@ class Settings:
     title: str = "VPN Auto"
     tls_source_port: int = 46738
     tls_target_port: int = 33175
+    tls_standard_port: int = 33176
 
 
 def header_value(value):
@@ -113,26 +114,32 @@ def tls_profile(lines, settings, title):
             continue
         try:
             parsed = urlsplit(line)
-            if parsed.hostname != settings.address.lower() or parsed.port != settings.tls_source_port:
+            if (parsed.hostname != settings.address.lower()
+                    or parsed.port not in (settings.tls_source_port, settings.tls_standard_port)):
                 continue
             if parsed.password is not None or parsed.path or not parsed.username:
                 raise InvalidSubscription()
             uid = str(UUID(parsed.username))
             query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=32)
+            security = "tls" if parsed.port == settings.tls_standard_port else "none"
             if (query.get("type") not in (["tcp"], ["raw"])
-                    or query.get("security", ["none"]) != ["none"]
+                    or query.get("security", ["none"]) != [security]
                     or query.get("encryption", ["none"]) != ["none"]
                     or query.get("flow", [""]) != [""]
                     or query.get("headerType", ["none"]) != ["none"]):
                 raise InvalidSubscription()
-            matching.append((uid, parsed.netloc.rsplit("@", 1)[1].rsplit(":", 1)[0]))
+            if security == "tls" and (query.get("allowInsecure", ["0"]) not in (["0"], ["false"])
+                                      or query.get("sni", [settings.address]) != [settings.address]):
+                raise InvalidSubscription()
+            matching.append((parsed.port, uid, parsed.netloc.rsplit("@", 1)[1].rsplit(":", 1)[0]))
         except (TypeError, ValueError):
             raise InvalidSubscription() from None
     if not matching:
         raise MissingSubscription()
-    if len(matching) != 1:
+    if (len({port for port, uid, address in matching}) != len(matching)
+            or len({uid for port, uid, address in matching}) != 1):
         raise InvalidSubscription()
-    uid, address = matching[0]
+    port, uid, address = matching[0]
     authority = f"{uid}@{address}:{settings.tls_target_port}"
     query = urlencode({"type": "tcp", "security": "tls", "encryption": "none",
                        "packetEncoding": "xudp"})

@@ -204,6 +204,47 @@ def deploy_auto_onboarding():
         finally:
             remote(name, 'sudo rm -rf -- ' + shlex.quote(stage))
 
+def deploy_xray_subscriptions():
+    import tempfile
+
+    name = inventory()['entry']['name']
+    helpers = ['install_xray_tls_frontends.py', 'install_auto_tls_frontend.py',
+               'xray_subscription_hosts.py', 'verify_xray_subscriptions.py',
+               'verify_xray_vless.py', 'compatible_vless.py', 'compatible_profiles.py',
+               'verify_auto_onboarding.py', 'failover_subscription.py', 'install_failover_subscription.py']
+    with tempfile.TemporaryDirectory(prefix='xray-subscriptions-', dir=ROOT / '.local') as tmp:
+        stage = upload(name, Path(tmp), helpers)
+        try:
+            script = '''import ipaddress, json, subprocess, sys
+from pathlib import Path
+stage = Path(sys.argv[1])
+sys.path.insert(0, str(stage))
+import install_xray_tls_frontends as frontend
+import install_failover_subscription as subscription
+import xray_subscription_hosts as hosts
+
+def check(name, *arguments):
+    subprocess.run([sys.executable, '-B', str(stage / name), *arguments], check=True, timeout=180)
+
+frontend.install()
+check('verify_xray_subscriptions.py', '--candidate-tls')
+print(json.dumps(subscription.upgrade(stage / 'failover_subscription.py')), flush=True)
+published = hosts.apply(hosts.DATABASE, ipaddress.IPv4Address(frontend.ADDRESS), hosts.BACKUPS)
+print(json.dumps(published), flush=True)
+try:
+    check('verify_xray_subscriptions.py')
+    check('verify_auto_onboarding.py')
+except BaseException:
+    if published['backup']:
+        print(json.dumps(hosts.rollback(hosts.DATABASE, Path(published['backup']))), flush=True)
+    raise
+'''
+            remote(name, 'sudo ' + shlex.join([
+                'flock', '-n', '/run/lock/vpn-auto-onboarding.lock', 'python3', '-B', '-', stage,
+            ]), script.encode())
+        finally:
+            remote(name, 'sudo rm -rf -- ' + shlex.quote(stage))
+
 def refresh_failover_monitoring():
     import shutil
     folder=ROOT/'.local/failover-monitoring'
@@ -217,7 +258,7 @@ def refresh_failover_monitoring():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','refresh-failover-monitoring','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
@@ -237,6 +278,7 @@ def main():
     elif args.command=='stage-failover':print(stage_failover())
     elif args.command=='update-failover-pool':update_failover_pool()
     elif args.command=='deploy-auto-onboarding':deploy_auto_onboarding()
+    elif args.command=='deploy-xray-subscriptions':deploy_xray_subscriptions()
     elif args.command=='refresh-failover-monitoring':refresh_failover_monitoring()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)
     elif args.command=='tunnel':

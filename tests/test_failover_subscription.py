@@ -67,6 +67,21 @@ class FailoverSubscriptionTests(unittest.TestCase):
         self.assertEqual(new.query, "type=tcp&security=tls&encryption=none&packetEncoding=xudp")
         self.assertEqual(unquote(new.fragment), "VPN Авто")
 
+    def test_native_xui_tls_host_is_a_source_for_new_auto_clients(self):
+        source = self.plain.replace(":46738", ":33176").replace("security=none", "security=tls")
+        expected = feed.rewrite_profile(self.plain.encode(), self.settings)
+        self.assertEqual(feed.rewrite_profile(source.encode(), self.settings), expected)
+        self.assertEqual(feed.rewrite_profile(self.wrapped(source, self.plain), self.settings), expected)
+        invalid = (
+            source.replace("security=tls", "security=none"),
+            source.replace("#x-ui", "&allowInsecure=1#x-ui"),
+            source.replace("#x-ui", "&sni=example.invalid#x-ui"),
+            source.replace(self.uuid, str(uuid4())),
+        )
+        for link in invalid:
+            with self.assertRaises(feed.InvalidSubscription):
+                feed.rewrite_profile(self.wrapped(self.plain, link), self.settings)
+
     def test_tls_fallback_never_uses_an_unverified_or_ambiguous_source(self):
         with self.assertRaises(feed.MissingSubscription):
             feed.rewrite_profile(self.wrapped(self.plain.replace("203.0.113.8", "example.invalid")), self.settings)

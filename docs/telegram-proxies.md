@@ -45,6 +45,10 @@ python3 scripts/deploy_tcp_demux.py rollback --host breeze-reef
 
 Используется официальный [Telegram WEB relay](https://github.com/telegramdesktop/tproxy-server) с HTTPS/WebView-транспортом и локальным MTProto DD backend. Это отдельный тип Telegram WEB, а не обычный HTTP CONNECT. Нужен клиент, поддерживающий этот экспериментальный тип и ссылку `tg://webproxy`.
 
+Для телефона ориентируйтесь на официальный Telegram Android или iOS версии 13.0 и новее. На Android поддержка адреса с путём и marker-секрета нашей ссылки появилась в 12.10.4; WEB из 12.10.2–12.10.3 принимает только hostname без пути и другой формат секрета. Android 13.0 добавляет fallback для WebView без бинарного обмена, но всё ещё требует `WEB_MESSAGE_LISTENER`. На iOS в исходниках 12.9.2 WEB-транспорт отсутствует, в 13.0 он присутствует. Наличие WEB в одном стороннем клиенте не означает поддержку в другом. Источники: [Android 12.10.3](https://github.com/DrKLO/Telegram/blob/2ad0f47d37c5db49e964c29cc19dbb5847c3ddd6/TMessagesProj/src/main/java/org/telegram/proxy/WebProxyTransport.java), [Android 12.10.4](https://github.com/DrKLO/Telegram/blob/c84801762fd5/TMessagesProj/src/main/java/org/telegram/utils/proxy/WebProxyTransport.java), [iOS 13.0](https://github.com/TelegramMessenger/Telegram-iOS/blob/release-13.0.0/submodules/WebProxyTransport/Sources/WebProxyConfiguration.swift).
+
+Если ссылка открывалась до смены DNS-имени, заново импортируйте актуальную `.local/web-proxy/access.md` и выберите новый профиль. Сохранённые на устройствах адреса автоматически не обновляются. При разнице между ноутбуком и телефоном отдельно сравните сеть и наличие VPN: активный прозрачный прокси на ноутбуке может скрыть сетевую блокировку, а успешный серверный тест не проверяет установленный мобильный Telegram/WebView.
+
 В закрытом окружении задайте `VPN_WEB_PROXY_ADDRESS` как DNS-имя, направленное на `VPN_ENTRY_ADDRESS`. Нужен стандартный HTTPS-вход, заданный через `VPN_MONITORING_HTTPS_PORT`; relay/admin/ACME используют отдельные свободные loopback-порты `VPN_WEB_PROXY_PORT`, `VPN_WEB_PROXY_ADMIN_PORT`, `VPN_WEB_ACME_PORT`.
 
 С ноутбука:

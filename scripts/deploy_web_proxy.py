@@ -91,7 +91,10 @@ def prepare(controller=None):
     access = installer.client_access(credentials, settings)
     write_private(private / 'access.json', json.dumps(access, indent=2) + '\n')
     write_private(private / 'access.md', '# Telegram WEB\n\n[Подключить в Telegram](' + access['link'] + ')\n\n'
-                  'Нужен клиент Telegram с поддержкой типа WEB. Обычные MTProto и SOCKS5 настраиваются отдельно.\n\n'
+                  'Нужен официальный Telegram версии 13.0 или новее для Android/iOS с поддержкой типа WEB. '
+                  'Для Telegram на Android с нашей ссылкой технический минимум — 12.10.4; 12.10.2–12.10.3 не поддерживают путь в адресе. '
+                  'На Android также нужен совместимый Android System WebView. Обычные MTProto и SOCKS5 настраиваются отдельно.\n\n'
+                  'Если профиль добавлялся до смены домена, импортируйте свежую ссылку выше: старые профили сами не обновляются.\n\n'
                   'Сервер WEB: `' + access['server'] + '`\n\nSecret: `' + access['secret'] + '`\n\n'
                   'Корень домена в браузере отвечает 404: это нормально, подключайтесь по ссылке выше.\n\n'
                   'Выходы резервируются через VPN Auto. Сам вход WEB пока один.\n')

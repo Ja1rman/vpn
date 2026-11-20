@@ -245,6 +245,87 @@ except BaseException:
         finally:
             remote(name, 'sudo rm -rf -- ' + shlex.quote(stage))
 
+def deploy_mtproto():
+    import hashlib
+    import re
+    import secrets
+    import shutil
+    import tempfile
+    import urllib.parse
+    import urllib.request
+    from install_mtproto import ARCHIVE_NAME, ARCHIVE_SHA256, PORT, VERSION
+
+    entry = inventory()['entry']
+    private = ROOT / '.local/mtproto'
+    private.mkdir(mode=0o700, parents=True, exist_ok=True)
+    access_file = private / 'access.json'
+    previous = json.loads(access_file.read_text()) if access_file.exists() else {}
+    secret = os.environ.get('VPN_MTPROTO_SECRET') or previous.get('secret')
+    if not secret:
+        secret = 'ee' + secrets.token_hex(16) + 'yandex.ru'.encode().hex()
+    if not isinstance(secret, str):
+        raise ValueError('VPN_MTPROTO_SECRET must be a hexadecimal FakeTLS secret')
+    secret = secret.strip().lower()
+    if not re.fullmatch(r'ee[0-9a-f]+', secret):
+        raise ValueError('Invalid hexadecimal FakeTLS secret')
+    try:
+        raw = bytes.fromhex(secret)
+        domain = raw[17:].decode('ascii')
+    except (ValueError, UnicodeError):
+        raise ValueError('Invalid hexadecimal FakeTLS secret') from None
+    if (len(raw) <= 17 or len(domain) > 253
+            or not re.fullmatch(r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+'
+                                r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', domain)):
+        raise ValueError('The FakeTLS secret must contain a valid cover domain')
+    fields = {'server': entry['address'], 'port': PORT, 'secret': secret}
+    query = urllib.parse.urlencode(fields)
+    access = dict(fields, domain=domain, tg_url='tg://proxy?' + query, web_url='https://t.me/proxy?' + query)
+    access_file.write_text(json.dumps(access, indent=2) + '\n')
+    access_file.chmod(0o600)
+    archive = private / ARCHIVE_NAME
+    if not archive.exists() or hashlib.sha256(archive.read_bytes()).hexdigest() != ARCHIVE_SHA256:
+        url = f'https://github.com/9seconds/mtg/releases/download/v{VERSION}/{ARCHIVE_NAME}'
+        with tempfile.NamedTemporaryFile(dir=private, delete=False) as temporary:
+            candidate = Path(temporary.name)
+            try:
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    shutil.copyfileobj(response, temporary)
+                temporary.flush()
+                if hashlib.sha256(candidate.read_bytes()).hexdigest() != ARCHIVE_SHA256:
+                    raise ValueError('The official mtg archive failed checksum verification')
+                candidate.replace(archive)
+            finally:
+                candidate.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix='mtproto-', dir=ROOT / '.local') as tmp:
+        folder = Path(tmp)
+        shutil.copyfile(archive, folder / ARCHIVE_NAME)
+        shutil.copyfile(access_file, folder / 'access.json')
+        stage = upload(entry['name'], folder, ['install_mtproto.py', 'verify_mtproto.py'])
+        try:
+            actions = [
+                ['python3', '-B', stage + '/install_mtproto.py', 'install',
+                 '--archive', stage + '/payload/' + ARCHIVE_NAME,
+                 '--secrets-file', stage + '/payload/access.json'],
+                ['python3', '-B', stage + '/verify_mtproto.py', '--host', '127.0.0.1', '--port', str(PORT),
+                 '--config', '/etc/vpn-mtproto/config.toml', '--dc', '2'],
+            ]
+            remote(entry['name'], 'sudo ' + shlex.join([
+                'flock', '-n', '/run/lock/vpn-mtproto.lock', 'bash', '-c',
+                ' && '.join(shlex.join(action) for action in actions),
+            ]))
+            config = remote(entry['name'], 'sudo cat /etc/vpn-mtproto/config.toml', capture=True).stdout
+            (private / 'config.toml').write_bytes(config)
+            (private / 'config.toml').chmod(0o600)
+        finally:
+            remote(entry['name'], 'sudo rm -rf -- ' + shlex.quote(stage))
+    (private / 'access.md').write_text(
+        '# Telegram MTProto\n\n' + f"[Подключить Telegram]({access['web_url']})\n\n"
+        + f"[Открыть в приложении]({access['tg_url']})\n\n"
+        + f"Сервер `{entry['address']}`, порт `{PORT}`, секрет `{secret}`.\n"
+    )
+    (private / 'access.md').chmod(0o600)
+    print('MTProto installed and verified; connection links saved privately in .local/mtproto/access.md')
+
 def refresh_failover_monitoring():
     import shutil
     folder=ROOT/'.local/failover-monitoring'
@@ -258,7 +339,7 @@ def refresh_failover_monitoring():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','refresh-failover-monitoring','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','deploy-mtproto','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
@@ -279,6 +360,7 @@ def main():
     elif args.command=='update-failover-pool':update_failover_pool()
     elif args.command=='deploy-auto-onboarding':deploy_auto_onboarding()
     elif args.command=='deploy-xray-subscriptions':deploy_xray_subscriptions()
+    elif args.command=='deploy-mtproto':deploy_mtproto()
     elif args.command=='refresh-failover-monitoring':refresh_failover_monitoring()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)
     elif args.command=='tunnel':

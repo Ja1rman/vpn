@@ -28,8 +28,10 @@ def main():
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('GITHUB_REF') != 'refs/heads/main':
         raise ValueError('This entry point requires a manual Actions run from main')
     component = os.environ.get('VPN_DEPLOY_COMPONENT', '')
-    if component not in {'dashboards', 'pool', 'monitoring', 'node-exporters', 'all'}:
+    if component not in {'dashboards', 'pool', 'monitoring', 'node-exporters', 'mtproto', 'all'}:
         raise ValueError('Unknown deployment component')
+    if component == 'mtproto' and not os.environ.get('VPN_MTPROTO_SECRET'):
+        raise ValueError('The mtproto component requires VPN_MTPROTO_SECRET')
     inv, hosts = hydrate()
     subprocess.run([sys.executable, str(ROOT / 'scripts/render.py')], check=True)
     subprocess.run([sys.executable, str(ROOT / 'scripts/certificates.py')], check=True)
@@ -52,6 +54,8 @@ def main():
         vpnctl.refresh_grafana()
     if component in {'pool', 'all'}:
         vpnctl.update_pool()
+    if component == 'mtproto':
+        vpnctl.deploy_mtproto()
     print('Deployment completed: ' + component)
 
 

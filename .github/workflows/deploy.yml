@@ -14,6 +14,7 @@ on:
           - pool
           - monitoring
           - node-exporters
+          - mtproto
           - all
 
 permissions:
@@ -48,6 +49,7 @@ jobs:
           VPN_OUTBOUNDS_JSON: ${{ secrets.VPN_OUTBOUNDS_JSON }}
           VPN_MONITORING_TLS_JSON: ${{ secrets.VPN_MONITORING_TLS_JSON }}
           VPN_ALERTMANAGER_CONFIG: ${{ secrets.VPN_ALERTMANAGER_CONFIG }}
+          VPN_MTPROTO_SECRET: ${{ secrets.VPN_MTPROTO_SECRET }}
         run: python3 scripts/ci_deploy.py
       - name: Remove temporary credentials
         if: always()

@@ -2,7 +2,8 @@
 """Install an isolated official Telegram WEB relay; TLS integration is separate."""
 import argparse
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import fcntl
 import grp
 import hashlib
 import hmac
@@ -17,6 +18,7 @@ import socket
 import stat
 import subprocess
 import time
+import uuid
 
 from vpn_env import env, port
 
@@ -33,6 +35,8 @@ PROFILES = ROOT / 'profiles.json'
 TOKEN = ROOT / 'token.key'
 MANIFEST = RUNTIME / 'source-manifest.json'
 UNIT_PATH = Path('/etc/systemd/system') / UNIT
+HOSTNAME_LOCK = Path('/run/lock') / (NAME + '-hostname.lock')
+HOSTNAME_BACKUPS = Path('/var/backups') / (NAME + '-hostname')
 
 
 def require(condition, message):
@@ -306,19 +310,27 @@ def verify_files(files, uid, gid):
             'Unexpected existing WEB relay files; preserving them for inspection')
 
 
-def install(binary, binary_sha256, secrets_file):
-    settings, credentials = endpoint_settings(), read_private(secrets_file)
-    files = {BINARY: read_binary(binary, binary_sha256), CONFIG: config_text(credentials, settings).encode(),
+def installation_files(binary, binary_sha256, credentials, settings):
+    return {BINARY: read_binary(binary, binary_sha256), CONFIG: config_text(credentials, settings).encode(),
              PROFILES: profiles_text(credentials, settings).encode(), TOKEN: bytes.fromhex(credentials['token_key']),
              UNIT_PATH: unit_text().encode(),
              MANIFEST: (json.dumps({'source_commit': SOURCE_COMMIT, 'source_sha256': SOURCE_SHA256,
                                     'binary_sha256': binary_sha256}, sort_keys=True) + '\n').encode()}
+
+
+def check_unit():
+    require(command('systemctl', 'show', '--property=FragmentPath', '--value', UNIT).decode().strip()
+            == str(UNIT_PATH), 'WEB relay service uses an unexpected unit fragment')
+    command('systemctl', 'is-active', '--quiet', UNIT)
+
+
+def install(binary, binary_sha256, secrets_file):
+    settings, credentials = endpoint_settings(), read_private(secrets_file)
+    files = installation_files(binary, binary_sha256, credentials, settings)
     if any(os.path.lexists(path) for path in (RUNTIME, ROOT, UNIT_PATH)):
         uid, gid = check_account()
         verify_files(files, uid, gid)
-        require(command('systemctl', 'show', '--property=FragmentPath', '--value', UNIT).decode().strip()
-                == str(UNIT_PATH), 'WEB relay service uses an unexpected unit fragment')
-        command('systemctl', 'is-active', '--quiet', UNIT)
+        check_unit()
         verify_listener(credentials, settings)
         return {'already_installed': True, 'unit': UNIT}
     require(command('systemctl', 'show', '--property=LoadState', '--value', UNIT).strip() == b'not-found',
@@ -377,17 +389,105 @@ def install(binary, binary_sha256, secrets_file):
             'tls_integration_pending': True, 'existing_services_restarted': False}
 
 
+def same_file(path, previous, identity):
+    info = path.lstat()
+    return (stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity
+            and path.read_bytes() == previous)
+
+
+def retarget_hostname(binary, binary_sha256, secrets_file, previous_hostname):
+    """Change only an explicitly expected WEB hostname, retaining every secret."""
+    validate_hostname(previous_hostname)
+    settings, credentials = endpoint_settings(), read_private(secrets_file)
+    desired = installation_files(binary, binary_sha256, credentials, settings)
+    previous_settings = replace(settings, hostname=previous_hostname)
+    previous = desired | {CONFIG: config_text(credentials, previous_settings).encode()}
+    before, after = json.loads(previous[CONFIG]), json.loads(desired[CONFIG])
+    before.pop('public_hostname')
+    after.pop('public_hostname')
+    require(before == after, 'The requested WEB migration changes more than its hostname')
+    with HOSTNAME_LOCK.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        uid, gid = check_account()
+        if CONFIG.read_bytes() == desired[CONFIG]:
+            verify_files(desired, uid, gid)
+            check_unit()
+            verify_listener(credentials, settings)
+            return {'already_retargeted': True, 'unit': UNIT, 'existing_services_restarted': False}
+        require(previous_hostname != settings.hostname, 'The previous WEB hostname already equals the desired hostname')
+        verify_files(previous, uid, gid)
+        check_unit()
+        info = CONFIG.lstat()
+        identity = (info.st_dev, info.st_ino)
+        HOSTNAME_BACKUPS.mkdir(mode=0o700, parents=True, exist_ok=True)
+        backup_info = HOSTNAME_BACKUPS.lstat()
+        require(stat.S_ISDIR(backup_info.st_mode) and backup_info.st_uid == os.geteuid()
+                and not backup_info.st_mode & 0o077, 'Unsafe WEB hostname backup directory')
+        nonce = uuid.uuid4().hex
+        backup = HOSTNAME_BACKUPS / nonce
+        backup.mkdir(mode=0o700)
+        write_new(backup / 'config.json', previous[CONFIG], 0o600)
+        candidate = ROOT / ('.hostname-' + nonce + '.json')
+        candidate_identity = None
+        changed = False
+        try:
+            write_new(candidate, desired[CONFIG], 0o640, gid)
+            candidate_info = candidate.lstat()
+            candidate_identity = (candidate_info.st_dev, candidate_info.st_ino)
+            command('runuser', '-u', NAME, '--', str(BINARY), '-config', str(candidate), '-check')
+            require(same_file(CONFIG, previous[CONFIG], identity),
+                    'WEB configuration changed concurrently; preserving it')
+            require(same_file(candidate, desired[CONFIG], candidate_identity),
+                    'WEB hostname candidate changed concurrently; preserving it')
+            os.replace(candidate, CONFIG)
+            changed = True
+            command('systemctl', 'restart', UNIT)
+            verify_files(desired, uid, gid)
+            check_unit()
+            verify_listener(credentials, settings)
+        except BaseException:
+            if changed:
+                require(same_file(CONFIG, desired[CONFIG], candidate_identity),
+                        'WEB configuration changed after migration; backup retained for review')
+                rollback_candidate = ROOT / ('.rollback-' + nonce + '.json')
+                write_new(rollback_candidate, previous[CONFIG], 0o640, gid)
+                os.replace(rollback_candidate, CONFIG)
+                try:
+                    command('systemctl', 'restart', UNIT)
+                    verify_files(previous, uid, gid)
+                    check_unit()
+                    verify_listener(credentials, previous_settings)
+                except BaseException:
+                    raise RuntimeError('The previous WEB config was restored; its dedicated service needs inspection') from None
+            raise
+        finally:
+            if candidate.exists():
+                require(candidate_identity is not None and same_file(candidate, desired[CONFIG], candidate_identity),
+                        'The WEB hostname candidate changed; preserving it for review')
+                candidate.unlink()
+        return {'retargeted': True, 'unit': UNIT, 'only_web_service_restarted': True,
+                'secrets_unchanged': True, 'base_path_unchanged': True, 'backup': str(backup),
+                'vpn_services_restarted': False}
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install'])
+    parser.add_argument('action', choices=['install', 'retarget-hostname'])
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--binary-sha256', required=True)
     parser.add_argument('--secrets-file', type=Path, required=True)
+    parser.add_argument('--previous-hostname')
     args = parser.parse_args()
     try:
         require(os.geteuid() == 0, 'Run the WEB relay installer as root on the entry server')
-        print(json.dumps(install(args.binary, args.binary_sha256, args.secrets_file)))
+        if args.action == 'retarget-hostname':
+            require(args.previous_hostname, 'An explicit previous WEB hostname is required')
+            result = retarget_hostname(args.binary, args.binary_sha256, args.secrets_file, args.previous_hostname)
+        else:
+            require(args.previous_hostname is None, 'The install action does not accept a previous hostname')
+            result = install(args.binary, args.binary_sha256, args.secrets_file)
+        print(json.dumps(result))
     except (OSError, RuntimeError, ValueError, KeyError) as error:
         detail = str(error) if type(error) is RuntimeError else type(error).__name__
         parser.exit(1, 'install-web-proxy: ' + detail + '\n')

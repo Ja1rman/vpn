@@ -1,5 +1,5 @@
 """Isolation, credentials, carrier framing and refusal contracts for WEB proxy."""
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import base64
 import hashlib
 import http.client
@@ -42,6 +42,54 @@ def executable():
     body = bytearray(32)
     body[:6], body[18:20] = b'\x7fELF\x02\x01', b'\x3e\x00'
     return bytes(body)
+
+
+@contextmanager
+def hostname_fixture():
+    secret, old = credentials(), settings()
+    desired = installer.replace(old, hostname='next.example')
+    with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+        root = Path(temporary)
+        runtime, etc = root / 'opt', root / 'etc'
+        paths = {'RUNTIME': runtime, 'ROOT': etc, 'BINARY': runtime / 'tproxy-server',
+                 'CONFIG': etc / 'config.json', 'PROFILES': etc / 'profiles.json',
+                 'TOKEN': etc / 'token.key', 'MANIFEST': runtime / 'source-manifest.json',
+                 'UNIT_PATH': root / 'unit.service', 'HOSTNAME_LOCK': root / 'hostname.lock',
+                 'HOSTNAME_BACKUPS': root / 'backups'}
+        for name, path in paths.items():
+            stack.enter_context(patch.object(installer, name, path))
+        runtime.mkdir(mode=0o755)
+        etc.mkdir(mode=0o750)
+        stack.enter_context(patch.object(installer, 'read_binary', return_value=executable()))
+        digest = hashlib.sha256(executable()).hexdigest()
+        files = installer.installation_files(Path('binary'), digest, secret, old)
+        for path, body in files.items():
+            path.write_bytes(body)
+            path.chmod(installer.file_metadata(path, 123, 456)[2])
+        original_lstat = Path.lstat
+
+        def metadata(path):
+            fields = list(original_lstat(path))
+            if path in (runtime, etc):
+                fields[4], fields[5] = 0, 456 if path == etc else 0
+            elif path in files:
+                fields[4], fields[5], _ = installer.file_metadata(path, 123, 456)
+            return os.stat_result(fields)
+
+        stack.enter_context(patch.object(Path, 'lstat', metadata))
+        stack.enter_context(patch.object(installer, 'endpoint_settings', return_value=desired))
+        stack.enter_context(patch.object(installer, 'read_private', return_value=secret))
+        stack.enter_context(patch.object(installer, 'check_account', return_value=(123, 456)))
+        stack.enter_context(patch.object(installer.os, 'fchown'))
+        check_listener = stack.enter_context(patch.object(installer, 'verify_listener'))
+
+        def successful_command(*arguments):
+            return str(paths['UNIT_PATH']).encode() if '--property=FragmentPath' in arguments else b''
+
+        command = stack.enter_context(patch.object(installer, 'command', side_effect=successful_command))
+        yield SimpleNamespace(paths=paths, previous=old, desired=desired, credentials=secret,
+                              digest=digest, files=files, command=command, listener=check_listener,
+                              successful_command=successful_command)
 
 
 class WebProxyTests(unittest.TestCase):
@@ -387,6 +435,113 @@ class WebProxyTests(unittest.TestCase):
                 installer.install(Path('binary'), digest, Path('secret'))
             command.assert_not_called()
             self.assertEqual(paths['TOKEN'].read_bytes(), files[paths['TOKEN']])
+
+    def test_hostname_migration_changes_only_hostname_and_restarts_only_new_web_unit(self):
+        with hostname_fixture() as fixture:
+            unaffected = {path: (path.read_bytes(), path.stat().st_ino) for path in fixture.files
+                          if path != fixture.paths['CONFIG']}
+            result = installer.retarget_hostname(Path('binary'), fixture.digest, Path('secret'),
+                                                 fixture.previous.hostname)
+            self.assertTrue(result['retargeted'])
+            self.assertFalse(result['vpn_services_restarted'])
+            previous = json.loads(fixture.files[fixture.paths['CONFIG']])
+            current = json.loads(fixture.paths['CONFIG'].read_text())
+            self.assertEqual(current.pop('public_hostname'), fixture.desired.hostname)
+            previous.pop('public_hostname')
+            self.assertEqual(current, previous)
+            self.assertTrue(all((path.read_bytes(), path.stat().st_ino) == original
+                                for path, original in unaffected.items()))
+            self.assertEqual([call.args for call in fixture.command.call_args_list
+                              if call.args[:2] == ('systemctl', 'restart')],
+                             [('systemctl', 'restart', installer.UNIT)])
+            backup = Path(result['backup']) / 'config.json'
+            self.assertEqual(backup.read_bytes(), fixture.files[fixture.paths['CONFIG']])
+            self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+            fixture.listener.assert_called_once_with(fixture.credentials, fixture.desired)
+            fixture.command.reset_mock()
+            self.assertTrue(installer.retarget_hostname(Path('binary'), fixture.digest, Path('secret'),
+                                                        fixture.previous.hostname)['already_retargeted'])
+            self.assertFalse(any(call.args[:2] == ('systemctl', 'restart')
+                                 for call in fixture.command.call_args_list))
+
+    def test_hostname_migration_refuses_other_config_drift_before_commands(self):
+        with hostname_fixture() as fixture:
+            config = json.loads(fixture.paths['CONFIG'].read_text())
+            config['limits']['max_sessions_global'] += 1
+            fixture.paths['CONFIG'].write_text(json.dumps(config))
+            with self.assertRaisesRegex(RuntimeError, 'refusing to overwrite'):
+                installer.retarget_hostname(Path('binary'), fixture.digest, Path('secret'),
+                                             fixture.previous.hostname)
+            fixture.command.assert_not_called()
+            self.assertEqual(json.loads(fixture.paths['CONFIG'].read_text()), config)
+
+    def test_hostname_migration_cas_preserves_a_concurrent_config_edit(self):
+        with hostname_fixture() as fixture:
+            concurrent = fixture.files[fixture.paths['CONFIG']] + b'\n'
+
+            def command(*arguments):
+                if arguments[0] == 'runuser':
+                    fixture.paths['CONFIG'].write_bytes(concurrent)
+                return fixture.successful_command(*arguments)
+
+            fixture.command.side_effect = command
+            with self.assertRaisesRegex(RuntimeError, 'changed concurrently'):
+                installer.retarget_hostname(Path('binary'), fixture.digest, Path('secret'),
+                                             fixture.previous.hostname)
+            self.assertEqual(fixture.paths['CONFIG'].read_bytes(), concurrent)
+            self.assertFalse(any(call.args[:2] == ('systemctl', 'restart')
+                                 for call in fixture.command.call_args_list))
+            self.assertEqual(set(fixture.paths['ROOT'].iterdir()),
+                             {fixture.paths[key] for key in ('CONFIG', 'PROFILES', 'TOKEN')})
+
+    def test_failed_hostname_health_check_restores_old_config_and_restarts_only_web(self):
+        with hostname_fixture() as fixture:
+            fixture.listener.side_effect = [RuntimeError('new bridge unavailable'), None]
+            with self.assertRaisesRegex(RuntimeError, 'new bridge unavailable'):
+                installer.retarget_hostname(Path('binary'), fixture.digest, Path('secret'),
+                                             fixture.previous.hostname)
+            self.assertEqual(fixture.paths['CONFIG'].read_bytes(), fixture.files[fixture.paths['CONFIG']])
+            self.assertEqual([call.args for call in fixture.command.call_args_list
+                              if call.args[:2] == ('systemctl', 'restart')],
+                             [('systemctl', 'restart', installer.UNIT)] * 2)
+            self.assertEqual(fixture.listener.call_args.args, (fixture.credentials, fixture.previous))
+            self.assertTrue(all(path.read_bytes() == body for path, body in fixture.files.items()))
+
+    def test_hostname_rollback_refuses_to_overwrite_post_restart_concurrent_change(self):
+        with hostname_fixture() as fixture:
+            concurrent = b'changed by another operator\n'
+
+            def unavailable(*arguments):
+                fixture.paths['CONFIG'].write_bytes(concurrent)
+                raise RuntimeError('new bridge unavailable')
+
+            fixture.listener.side_effect = unavailable
+            with self.assertRaisesRegex(RuntimeError, 'backup retained'):
+                installer.retarget_hostname(Path('binary'), fixture.digest, Path('secret'),
+                                             fixture.previous.hostname)
+            self.assertEqual(fixture.paths['CONFIG'].read_bytes(), concurrent)
+            self.assertEqual(len([call for call in fixture.command.call_args_list
+                                  if call.args[:2] == ('systemctl', 'restart')]), 1)
+
+    def test_deploy_retarget_passes_explicit_previous_hostname_and_accepts_only_retarget_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.local').mkdir()
+            binary, credential_file = root / 'binary', root / 'credentials'
+            binary.write_bytes(executable())
+            credential_file.write_text(json.dumps(credentials()))
+            prepared = {'binary': binary, 'credentials': credential_file, 'binary_sha256': '0' * 64}
+            controller = SimpleNamespace(ROOT=root, inventory=lambda: {'entry': {'name': 'entry'}})
+            controller.upload = lambda name, folder, extras: '/opt/vpn-infra/staging/' + name + '/' + folder.name
+            result = {'unit': installer.UNIT, 'retargeted': True}
+            controller.remote = MagicMock(side_effect=lambda *args, **kwargs:
+                                           SimpleNamespace(stdout=json.dumps(result).encode()))
+            with patch.object(deployment, 'prepare', return_value=prepared):
+                self.assertTrue(deployment.deploy(controller, previous_hostname='previous.example')['retargeted'])
+            install_command = controller.remote.call_args_list[0].args[1]
+            self.assertIn('retarget-hostname', install_command)
+            self.assertIn('--previous-hostname previous.example', install_command)
+            self.assertNotIn('systemctl', install_command)
 
 
 if __name__ == '__main__':

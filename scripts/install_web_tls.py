@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import secrets
 import socket
 import ssl
 import subprocess
@@ -33,9 +34,13 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def command(*args, timeout=30):
-    result = subprocess.run(args, capture_output=True, timeout=timeout)
-    require(result.returncode == 0, 'WEB TLS command failed: ' + args[0])
+def command(*args, timeout=30, data=None):
+    result = subprocess.run(args, input=data, capture_output=True, timeout=timeout)
+    if result.returncode and ROOT.is_dir():
+        write_private(ROOT / 'last-command-error.json', json.dumps({
+            'command': list(args), 'exit_code': result.returncode,
+            'stderr': result.stderr.decode(errors='replace')}, indent=2).encode())
+    require(result.returncode == 0, 'WEB TLS command failed: ' + ' '.join(args[:2]))
     return result.stdout
 
 
@@ -95,15 +100,16 @@ def write_private(path, data, mode=0o600):
 def check_candidate(container, config, candidate):
     # Existing read-only bind mounts stay in place; validation uses a private
     # temporary configuration in the running container, without a reload.
-    temporary = ROOT / ('candidate-' + container + '.conf')
-    write_private(temporary, candidate.encode())
-    destination = '/tmp/vpn-telegram-web-candidate.conf'
+    destination = '/tmp/vpn-telegram-web-candidate-' + secrets.token_hex(12) + '.conf'
     try:
-        command('docker', 'cp', str(temporary), container + ':' + destination)
+        # docker cp rejects read-only rootfs even for a writable tmpfs. Write
+        # through the running container's /tmp namespace, using owner-only,
+        # exclusive creation and stdin so the config never enters argv/logs.
+        command('docker', 'exec', '-i', container, 'sh', '-c',
+                'umask 077; set -C; cat > "$1"', 'sh', destination, data=candidate.encode())
         command('docker', 'exec', container, 'nginx', '-t', '-c', destination)
     finally:
         command('docker', 'exec', container, 'rm', '-f', destination)
-        temporary.unlink(missing_ok=True)
 
 
 def container_pid(container):

@@ -90,7 +90,11 @@ def prepare(controller=None):
         write_private(manifest_file, json.dumps(manifest, sort_keys=True, indent=2) + '\n')
     access = installer.client_access(credentials, settings)
     write_private(private / 'access.json', json.dumps(access, indent=2) + '\n')
-    write_private(private / 'access.md', '# Telegram WEB\n\n[Подключить](' + access['link'] + ')\n')
+    write_private(private / 'access.md', '# Telegram WEB\n\n[Подключить в Telegram](' + access['link'] + ')\n\n'
+                  'Нужен клиент Telegram с поддержкой типа WEB. Обычные MTProto и SOCKS5 настраиваются отдельно.\n\n'
+                  'Сервер WEB: `' + access['server'] + '`\n\nSecret: `' + access['secret'] + '`\n\n'
+                  'Корень домена в браузере отвечает 404: это нормально, подключайтесь по ссылке выше.\n\n'
+                  'Выходы резервируются через VPN Auto. Сам вход WEB пока один.\n')
     write_private(private / 'nginx-location.conf', installer.nginx_location(credentials, settings))
     write_private(private / 'config.json', installer.config_text(credentials, settings))
     write_private(private / 'proof-settings.json', json.dumps({
@@ -101,7 +105,7 @@ def prepare(controller=None):
             'binary_sha256': manifest['binary_sha256']}
 
 
-def deploy(controller=None):
+def deploy(controller=None, *, previous_hostname=None):
     if controller is None:
         import vpnctl as controller
     prepared = prepare(controller)
@@ -115,13 +119,18 @@ def deploy(controller=None):
         expected = '/opt/vpn-infra/staging/' + entry['name'] + '/' + folder.name
         installer.require(stage == expected, 'Unexpected WEB private staging directory')
         try:
-            response = controller.remote(entry['name'], 'sudo python3 -B ' + shlex.join([
-                stage + '/install_web_proxy.py', 'install', '--binary', stage + '/payload/tproxy-server',
+            action = 'retarget-hostname' if previous_hostname is not None else 'install'
+            arguments = [stage + '/install_web_proxy.py', action, '--binary', stage + '/payload/tproxy-server',
                 '--binary-sha256', prepared['binary_sha256'],
-                '--secrets-file', stage + '/payload/credentials.json']), capture=True)
+                '--secrets-file', stage + '/payload/credentials.json']
+            if previous_hostname is not None:
+                installer.validate_hostname(previous_hostname)
+                arguments.extend(['--previous-hostname', previous_hostname])
+            response = controller.remote(entry['name'], 'sudo python3 -B ' + shlex.join(arguments), capture=True)
             result = json.loads(response.stdout)
+            accepted = ('retargeted', 'already_retargeted') if previous_hostname is not None else ('installed', 'already_installed')
             installer.require(result.get('unit') == installer.UNIT
-                              and (result.get('installed') is True or result.get('already_installed') is True),
+                              and any(result.get(key) is True for key in accepted),
                               'The entry server returned no verified WEB installation state')
             return result
         finally:
@@ -132,14 +141,17 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--previous-hostname', help='Explicitly migrate only the existing WEB relay hostname')
     args = parser.parse_args()
+    if args.prepare_only and args.previous_hostname:
+        parser.error('--previous-hostname cannot be combined with --prepare-only')
     try:
         if args.prepare_only:
             result = prepare()
             print(json.dumps({'prepared': True, 'binary_sha256': result['binary_sha256'],
                               'credentials_and_access': 'saved privately', 'server_changes': False}))
         else:
-            print(json.dumps(deploy()))
+            print(json.dumps(deploy(previous_hostname=args.previous_hostname)))
     except (OSError, RuntimeError, ValueError, KeyError) as error:
         detail = str(error) if type(error) is RuntimeError else type(error).__name__
         parser.exit(1, 'deploy-web-proxy: ' + detail + '\n')

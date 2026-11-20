@@ -59,7 +59,16 @@ python3 scripts/verify_web_proxy.py \
   --native-probe .local/telegram-probe/telegram-probe --dc 2
 ```
 
-Готовая ссылка сохраняется в `.local/web-proxy/access.md`. До успешного публичного HTTPS-теста она не считается рабочей. Непубличный Linux relay уже установлен; выпуск сертификата и открытие WEB ожидают DNS. Секрет, путь и signing key сохраняются в `.local/web-proxy/credentials.json`; при восстановлении передайте неизменённый файл или защищённый `VPN_WEB_PROXY_CREDENTIALS_JSON`.
+Готовая ссылка сохраняется в `.local/web-proxy/access.md`. WEB опубликован на настроенном DNS-имени; публичный HTTPS с проверкой сертификата и полный Telegram DH/RPC успешно проверены для двух центров данных. Корень домена в браузере намеренно отвечает 404: подключение выполняется через ссылку `tg://webproxy` в клиенте с поддержкой WEB. Проверка без VPN в проблемной Wi-Fi-сети отдельно не подтверждена. Секрет, путь и signing key сохраняются в `.local/web-proxy/credentials.json`; при восстановлении передайте неизменённый файл или защищённый `VPN_WEB_PROXY_CREDENTIALS_JSON`.
+
+Для смены ещё не опубликованного имени relay обновите только `VPN_WEB_PROXY_ADDRESS` в закрытом окружении и выполните явную миграцию:
+
+```bash
+python3 scripts/deploy_web_proxy.py --previous-hostname "${VPN_WEB_PREVIOUS_ADDRESS}"
+python3 scripts/deploy_web_tls.py
+```
+
+`VPN_WEB_PREVIOUS_ADDRESS` здесь — прежнее DNS-имя, которое вы явно передаёте команде. Миграция проверяет совпадение всей установки, меняет только hostname с резервной копией и откатом, сохраняет ключи и путь; перезапускается только WEB-relay. Уже опубликованные nginx/ACME server-блоки автоматическая hostname-миграция не заменяет: сначала требуется отдельная согласованная миграция TLS. Обычный повторный deploy по-прежнему отказывается перезаписывать отличающуюся установку.
 
 `install_web_tls.py` добавляет отдельные hostname server-блоки в существующий nginx. ACME слушает только loopback, challenge передаётся ему через HTTP; Grafana сохраняет IP-сертификат и маршруты. Перед записью проверяются candidate и исходные байты; применяется только graceful HUP. Сертификат WEB, реально предъявляемый nginx, проверяется по SHA256 и доверенному DNS-имени. Отдельный таймер `vpn-telegram-web-certificate.timer` выполняет продление. Рабочие VPN-службы не перезапускаются.
 

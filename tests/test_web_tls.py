@@ -19,6 +19,18 @@ import install_web_tls as tls
 
 
 class WebTLSTest(unittest.TestCase):
+    def test_candidate_uses_private_stdin_tmpfs_on_read_only_container(self):
+        candidate = 'events {}\nhttp {}\n'
+        with patch.object(tls, 'command') as command:
+            tls.check_candidate('readonly-nginx', Path('nginx.conf'), candidate)
+        calls = command.call_args_list
+        self.assertEqual(calls[0].args[:4], ('docker', 'exec', '-i', 'readonly-nginx'))
+        self.assertEqual(calls[0].kwargs['data'], candidate.encode())
+        self.assertIn('umask 077; set -C;', calls[0].args[6])
+        self.assertNotIn(candidate, calls[0].args)
+        self.assertIn('nginx', calls[1].args)
+        self.assertEqual(calls[-1].args[:5], ('docker', 'exec', 'readonly-nginx', 'rm', '-f'))
+
     def setUp(self):
         self.settings = relay.Endpoints('web.example', env('VPN_LOOPBACK_IP'),
                                        port('VPN_TEST_SNIFF_PORT'), port('VPN_TEST_EXIT_C_PORT'),

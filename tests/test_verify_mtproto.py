@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import sys
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from test_environment import configure
@@ -13,6 +14,17 @@ import verify_mtproto as probe
 
 
 class MTProtoVerificationTests(unittest.TestCase):
+    def test_nested_probe_cannot_bypass_its_supplied_tunnel(self):
+        tunneled = Mock(side_effect=OSError('private diagnostic must not escape'))
+        with patch.object(probe.socket, 'create_connection') as direct:
+            with self.assertRaises(probe.ProbeError) as failure:
+                probe.probe(env('VPN_TEST_ADDRESS_A'), env_port('VPN_TEST_VLESS_PORT'),
+                            bytes(range(16)), 'example.org', dialer=tunneled)
+        self.assertEqual(failure.exception.stage, 'tcp_connect')
+        self.assertNotIn('private diagnostic', str(failure.exception))
+        tunneled.assert_called_once_with((env('VPN_TEST_ADDRESS_A'), env_port('VPN_TEST_VLESS_PORT')), timeout=15)
+        direct.assert_not_called()
+
     def test_openssl_aes256_ctr_matches_nist_vector_across_chunks(self):
         key = bytes.fromhex('603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4')
         iv = bytes.fromhex('f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff')

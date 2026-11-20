@@ -11,6 +11,7 @@
       "${VPN_HTTP_LEGACY_PORT}",
       "${VPN_MTPROTO_PORT}",
       "${VPN_MTPROTO_PUBLIC_PORT}",
+      "${VPN_MTPROTO_DD_PORT}",
       "${VPN_TELEGRAM_SOCKS_PORT}"
     ]
   },

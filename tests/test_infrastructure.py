@@ -32,7 +32,7 @@ class SafetyInvariants(unittest.TestCase):
         entry = next(group for group in probes if group['labels'] == {'host': 'entry'})
         expected_ports = [env_port(name) for name in (
             'VPN_VLESS_NATIVE_PORT', 'VPN_COMPAT_VLESS_PORT', 'VPN_HTTP_LEGACY_PORT',
-            'VPN_MTPROTO_PORT', 'VPN_MTPROTO_PUBLIC_PORT', 'VPN_TELEGRAM_SOCKS_PORT',
+            'VPN_MTPROTO_PORT', 'VPN_MTPROTO_PUBLIC_PORT', 'VPN_MTPROTO_DD_PORT', 'VPN_TELEGRAM_SOCKS_PORT',
             'VPN_BALANCER_SOCKS_PORT')]
         self.assertEqual(set(entry['targets']), {f"{env('VPN_LOOPBACK_IP')}:{value}" for value in expected_ports})
         self.assertEqual(len(entry['targets']), len(set(entry['targets'])))

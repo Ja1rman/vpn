@@ -253,12 +253,13 @@ def validate_res_pq(reply, nonce):
     return count
 
 
-def probe(host, port, key, hostname, *, dc=2, timeout=15):
+def probe(host, port, key, hostname, *, dc=2, timeout=15, dialer=None):
     require(1 <= abs(dc) <= 5 and 1 <= port <= 65535 and 1 <= timeout <= 60, 'Invalid probe destination or timeout')
     start = time.monotonic()
     stage, authenticated = 'tcp_connect', False
     try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
+        connect = socket.create_connection if dialer is None else dialer
+        with connect((host, port), timeout=timeout) as sock:
             wire = Wire(sock, start + timeout)
             stage = 'client_hello'
             hello, random, session = client_hello(key, hostname)

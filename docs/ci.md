@@ -94,7 +94,7 @@ python3 scripts/sync_github_secrets.py --repo Ja1rman/vpn
 | `pool` | Горячее обновление outbounds/routing отдельного балансировщика |
 | `monitoring` | Compose: Prometheus, Alertmanager, Blackbox, Grafana, nginx |
 | `node-exporters` | Обновление Node Exporter на входном и выходных серверах |
-| `mtproto` | MTProto и SOCKS5 через установленный VPN Auto. Требует `VPN_MTPROTO_SECRET`, `VPN_TELEGRAM_SOCKS_USERNAME` и `VPN_TELEGRAM_SOCKS_PASSWORD` |
+| `mtproto` | MTProto, SOCKS5 и, при заданном `VPN_MTPROTO_DD_PORT`, отдельный DD через установленный VPN Auto. Требует `VPN_MTPROTO_SECRET`, `VPN_TELEGRAM_SOCKS_USERNAME` и `VPN_TELEGRAM_SOCKS_PASSWORD` |
 | `all` | Node Exporter → мониторинг → горячее обновление пула |
 
 До изменения каждого затрагиваемого сервера создаётся private backup в `/var/backups/vpn-infra/ci/<UTC>-<run-id>-<attempt>/configuration.tar.gz`, права каталога `700`, архива `600`. Его можно забрать по SSH; в публичные Actions artifacts архив не попадает. Архивы автоматически не удаляются.

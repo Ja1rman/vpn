@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tarfile
 from vpn_env import configured_values, env, expand, load_json, port
 from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
@@ -184,7 +185,7 @@ def stage_failover():
         return upload(inv['entry']['name'],folder,[
             'failover_variant.py','priority_pool.py','verify_priority_backup.py','verify_vpn.py',
             'enable_failover_variant.py','failover_subscription.py','install_failover_subscription.py',
-            'update_failover_pool.py','auto_ru_routes.py','enable_auto_ru.py'])
+            'update_failover_pool.py','auto_ru_routes.py','enable_auto_ru.py','telegram_local_routes.py'])
 
 def update_failover_pool():
     stage=stage_failover()
@@ -337,7 +338,79 @@ def deploy_mtproto():
     )
     (private / 'access.md').chmod(0o600)
     deploy_telegram_socks()
+    if configured_values().get('VPN_MTPROTO_DD_PORT'):
+        deploy_mtproto_dd()
     print('MTProto installed and verified; connection links saved privately in .local/mtproto/access.md')
+
+
+def deploy_mtproto_dd():
+    import hashlib
+    import shutil
+    import tempfile
+    import urllib.parse
+    import urllib.request
+    import install_mtproto_dd as installer
+    from verify_mtproto import parse_secret
+
+    entry = inventory()['entry']
+    original = ROOT / '.local/mtproto/access.json'
+    secret = os.environ.get('VPN_MTPROTO_SECRET')
+    if not secret and original.exists():
+        secret = json.loads(original.read_text())['secret']
+    if not secret:
+        raise ValueError('Set VPN_MTPROTO_SECRET or deploy the existing MTProto service first')
+    key, _domain = parse_secret(secret)
+    private = ROOT / '.local/mtproto-dd'
+    private.mkdir(mode=0o700, parents=True, exist_ok=True)
+    access_file = private / 'access.json'
+    access = {'server': entry['address'], 'port': port('VPN_MTPROTO_DD_PORT'), 'secret': 'dd' + key.hex()}
+    if access_file.exists() and json.loads(access_file.read_text()).get('secret') != access['secret']:
+        raise ValueError('The existing DD client secret differs; refusing an implicit credential rotation')
+    query = urllib.parse.urlencode(access)
+    access.update(tg_url='tg://proxy?' + query, web_url='https://t.me/proxy?' + query)
+    assets = private / 'assets'
+    assets.mkdir(mode=0o700, exist_ok=True)
+    inputs = [
+        ('source.tar.gz', installer.SOURCE_URL, installer.ARCHIVE_SHA256),
+        ('PySocks-1.7.1-py3-none-any.whl', installer.SOCKS_WHEEL_URL, installer.SOCKS_WHEEL_SHA256),
+    ]
+    for filename, url, digest in inputs:
+        target = assets / filename
+        if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+            continue
+        with tempfile.NamedTemporaryFile(dir=assets, delete=False) as temporary:
+            candidate = Path(temporary.name)
+            try:
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    shutil.copyfileobj(response, temporary)
+                temporary.flush()
+                if hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+                    raise ValueError('A pinned DD proxy deployment asset failed checksum verification')
+                candidate.replace(target)
+            finally:
+                candidate.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix='mtproto-dd-', dir=ROOT / '.local') as temporary:
+        folder = Path(temporary)
+        for filename, _url, _digest in inputs:
+            shutil.copyfile(assets / filename, folder / filename)
+        (folder / 'secrets.json').write_text(json.dumps({'secret': secret}))
+        (folder / 'secrets.json').chmod(0o600)
+        stage = upload(entry['name'], folder, ['install_mtproto_dd.py'])
+        try:
+            remote(entry['name'], 'sudo python3 -B ' + shlex.join([
+                stage + '/install_mtproto_dd.py', 'install', '--archive', stage + '/payload/source.tar.gz',
+                '--socks-wheel', stage + '/payload/PySocks-1.7.1-py3-none-any.whl',
+                '--secrets-file', stage + '/payload/secrets.json']))
+            config = remote(entry['name'], 'sudo cat /etc/vpn-mtproto-dd/config.py', capture=True).stdout
+            (private / 'config.py').write_bytes(config)
+            (private / 'config.py').chmod(0o600)
+        finally:
+            remote(entry['name'], 'sudo rm -rf -- ' + shlex.quote(stage))
+    access_file.write_text(json.dumps(access, indent=2) + '\n')
+    access_file.chmod(0o600)
+    (private / 'access.md').write_text('# Telegram MTProto DD\n\n[Подключить](' + access['web_url'] + ')\n')
+    (private / 'access.md').chmod(0o600)
+    print('MTProto DD installed; connection links saved privately in .local/mtproto-dd/access.md')
 
 def deploy_telegram_socks():
     import secrets
@@ -392,7 +465,7 @@ def refresh_failover_monitoring():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','deploy-mtproto','deploy-telegram-socks','refresh-failover-monitoring','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','deploy-mtproto','deploy-mtproto-dd','deploy-telegram-socks','deploy-telegram-local','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
@@ -414,7 +487,9 @@ def main():
     elif args.command=='deploy-auto-onboarding':deploy_auto_onboarding()
     elif args.command=='deploy-xray-subscriptions':deploy_xray_subscriptions()
     elif args.command=='deploy-mtproto':deploy_mtproto()
+    elif args.command=='deploy-mtproto-dd':deploy_mtproto_dd()
     elif args.command=='deploy-telegram-socks':deploy_telegram_socks()
+    elif args.command=='deploy-telegram-local':subprocess.run([sys.executable, str(ROOT/'scripts/deploy_telegram_local.py')], check=True)
     elif args.command=='refresh-failover-monitoring':refresh_failover_monitoring()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)
     elif args.command=='tunnel':

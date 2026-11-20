@@ -83,7 +83,14 @@ def transform(config):
     need([o for o in outbounds if o['tag'] == LEGACY] == [expected_old],
          'Legacy SOCKS handler has changed')
     prefix = [active_rule(r) for r in rules[:old[0]] if r.get('enabled', True)][3:]
-    need(all(r == VARIANT_RULE or (r.get('inboundTag') and INBOUND not in r['inboundTag'])
+    telegram_rules = []
+    if any(r.get('ruleTag', '').startswith('vpn-telegram-local-') for r in prefix):
+        import telegram_local_routes
+        telegram_rules = [r for r in prefix if r.get('ruleTag') in telegram_local_routes.TAGS]
+        need(bool(telegram_rules), 'Unknown local Telegram route prefix')
+        need(telegram_local_routes.transform(config, inbound_tags=telegram_rules[0].get('inboundTag')) == config,
+             'Local Telegram routes differ from the validated fixed destinations')
+    need(all(r == VARIANT_RULE or r in telegram_rules or (r.get('inboundTag') and INBOUND not in r['inboundTag'])
              for r in prefix), 'Another rule can intercept this VLESS input before the old catchall')
     if OUT in tags or variant_rules:
         need([o for o in outbounds if o['tag'] == OUT] == [VARIANT_OUT]
@@ -97,6 +104,9 @@ def transform(config):
 
 
 def candidates(runtime, template):
+    if any(r.get('ruleTag', '').startswith('vpn-telegram-local-') for r in runtime['routing']['rules']):
+        import telegram_local_routes
+        telegram_local_routes.candidates(runtime, template)
     need(normalized_routing(template['routing']) == runtime['routing'],
          'Runtime routing and panel template differ')
     need(runtime['outbounds'] == template['outbounds'], 'Runtime and template outbounds differ')

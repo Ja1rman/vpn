@@ -6,6 +6,7 @@ which retains live authorization, traffic accounting, and routing to the pool.
 Adding users to the frontend requires an explicit reviewed update; there is no
 background synchronizer.
 """
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import base64
 import grp
@@ -156,7 +157,7 @@ def enabled_clients(database, port):
         return result
 
 
-def build_config(inbound, allowed, port=33173, listen="0.0.0.0", *,
+def build_config(inbound, allowed, port=env_port('VPN_COMPAT_VLESS_PORT'), listen=env_value('VPN_BIND_IP'), *,
                  forward_inbound=None, forward_allowed=None):
     if not 1024 <= port <= 65535:
         raise RuntimeError("Use an unprivileged TCP port from 1024 to 65535")
@@ -171,7 +172,7 @@ def build_config(inbound, allowed, port=33173, listen="0.0.0.0", *,
     forward_port = int(forward_inbound["port"])
     if not 1 <= forward_port <= 65535 or forward_port == port:
         raise RuntimeError("Invalid main forwarding port")
-    if forward_inbound.get("listen", "0.0.0.0") not in ("", "0.0.0.0", "127.0.0.1", "::"):
+    if forward_inbound.get("listen", env_value('VPN_BIND_IP')) not in ("", env_value('VPN_BIND_IP'), env_value('VPN_LOOPBACK_IP'), env_value('VPN_BIND_IPV6_IP')):
         raise RuntimeError("Main forwarding inbound must accept loopback connections")
     forwarding = {str(uuid.UUID(c["id"])): c.get("flow", "")
                   for c in forward_inbound["settings"]["clients"]}
@@ -206,7 +207,7 @@ def build_config(inbound, allowed, port=33173, listen="0.0.0.0", *,
         name = "client-" + identity
         tag = "main-" + identity
         users.append({"name": name, "uuid": uid, "flow": flow})
-        outbounds.append({"type": "vless", "tag": tag, "server": "127.0.0.1",
+        outbounds.append({"type": "vless", "tag": tag, "server": env_value('VPN_LOOPBACK_IP'),
                           "server_port": forward_port, "uuid": uid, "packet_encoding": "xudp"})
         rules.append({"auth_user": [name], "action": "route", "outbound": tag})
     if not users:
@@ -220,7 +221,7 @@ def build_config(inbound, allowed, port=33173, listen="0.0.0.0", *,
             "type": "vless", "tag": "compatible-vless", "listen": listen,
             "listen_port": port, "users": users,
             "tls": {"enabled": True, "server_name": "yandex.ru", "reality": {
-                "enabled": True, "handshake": {"server": "yandex.ru", "server_port": 443},
+                "enabled": True, "handshake": {"server": "yandex.ru", "server_port": env_port('VPN_WEB_HTTPS_PORT')},
                 "private_key": private, "short_id": short_ids,
             }},
         }],
@@ -283,7 +284,7 @@ def install(args):
     forward = source_inbound(args.source_config, args.forward_port, reality=False)
     allowed = enabled_clients(args.database, args.source_port)
     forward_allowed = enabled_clients(args.database, args.forward_port)
-    config = build_config(inbound, allowed, args.port, "0.0.0.0",
+    config = build_config(inbound, allowed, args.port, env_value('VPN_BIND_IP'),
                           forward_inbound=forward, forward_allowed=forward_allowed)
     payload = config_bytes(config)
     expected = {CONFIG: payload, UNIT: UNIT_TEXT.encode(), RUNTIME / "sing-box": binary_bytes}
@@ -311,7 +312,7 @@ def install(args):
     if subprocess.run(["systemctl", "cat", SERVICE], stdout=subprocess.DEVNULL,
                       stderr=subprocess.DEVNULL).returncode == 0:
         raise RuntimeError("An existing systemd service has this name")
-    port_free("0.0.0.0", args.port)
+    port_free(env_value('VPN_BIND_IP'), args.port)
     with tempfile.TemporaryDirectory(prefix="compatible-vless-") as work:
         temp = Path(work)
         binary = temp / "sing-box"
@@ -356,7 +357,7 @@ def install(args):
         run("systemctl", "is-active", "--quiet", SERVICE)
         for attempt in range(20):
             try:
-                with socket.create_connection(("127.0.0.1", args.port), timeout=1):
+                with socket.create_connection((env_value('VPN_LOOPBACK_IP'), args.port), timeout=1):
                     break
             except OSError:
                 if attempt == 19:
@@ -384,12 +385,12 @@ def main():
         item = sub.add_parser(command)
         item.add_argument("--source-config", type=Path, default=Path("/usr/local/x-ui/bin/config.json"))
         item.add_argument("--database", type=Path, default=Path("/etc/x-ui/x-ui.db"))
-        item.add_argument("--source-port", type=int, default=33172)
-        item.add_argument("--forward-port", type=int, default=46738)
-        item.add_argument("--port", type=int, default=33173)
+        item.add_argument("--source-port", type=int, default=env_port('VPN_VLESS_NATIVE_PORT'))
+        item.add_argument("--forward-port", type=int, default=env_port('VPN_VLESS_AUTH_PORT'))
+        item.add_argument("--port", type=int, default=env_port('VPN_COMPAT_VLESS_PORT'))
         if command == "render":
             item.add_argument("--output-dir", type=Path, required=True)
-            item.add_argument("--listen", default="0.0.0.0")
+            item.add_argument("--listen", default=env_value('VPN_BIND_IP'))
             item.add_argument("--runtime-only", action="store_true", help="Canary/fixture only: skip panel authorization")
             item.add_argument("--check-binary", type=Path)
         else:

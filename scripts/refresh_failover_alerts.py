@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate and hot-reload entry monitoring files without restarting containers or VPN."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 from datetime import datetime, timezone
 import fcntl
@@ -20,7 +21,7 @@ BACKUPS = Path('/var/backups/vpn-infra')
 ALERTMANAGER = 'alertmanager/alertmanager.yml'
 FILES = ('blackbox.yml', 'prometheus/prometheus.yml', 'prometheus/alerts.yml',
          'prometheus/vpn-targets.json')
-PORTS = {'blackbox': 9115, 'alertmanager': 9093, 'prometheus': 9090}
+PORTS = {'blackbox': env_port('VPN_BLACKBOX_PORT'), 'alertmanager': env_port('VPN_ALERTMANAGER_PORT'), 'prometheus': env_port('VPN_PROMETHEUS_PORT')}
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 OLD_INHIBITION = (b"  - source_matchers: ['alertname=\"NodeUnavailable\"']\n"
                   b"    target_matchers: ['severity=\"warning\"']\n"
@@ -59,7 +60,7 @@ def pid(service):
 
 
 def request(service, path, post=False):
-    url = f'http://127.0.0.1:{PORTS[service]}{path}'
+    url = env_expand(f'http://${{VPN_LOOPBACK_IP}}:{PORTS[service]}{path}')
     req = urllib.request.Request(url, data=b'' if post else None)
     with OPENER.open(req, timeout=8) as response:
         return response.read()

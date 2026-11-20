@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Publish native x-ui TLS subscription hosts without changing VPN authorization."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 from contextlib import closing
 from datetime import datetime, timezone
@@ -17,7 +18,7 @@ import uuid
 
 DATABASE = Path('/etc/x-ui/x-ui.db')
 BACKUPS = Path('/var/backups/vpn-infra')
-PORTS = {46738: 33176, 22799: 33177, 16715: 33178, 18398: 33179}
+PORTS = {env_port('VPN_VLESS_AUTH_PORT'): env_port('VPN_STANDARD_TLS_PORT'), env_port('VPN_PRIMARY_VLESS_PORT'): env_port('VPN_PRIMARY_TLS_PORT'), env_port('VPN_NL_RELAY_VLESS_PORT'): env_port('VPN_NL_RELAY_TLS_PORT'), env_port('VPN_THIRD_VLESS_PORT'): env_port('VPN_THIRD_TLS_PORT')}
 MARKER = 'vpn-infra-xray-tls'
 ARRAY_FIELDS = ('tags', 'alpn', 'pinned_peer_cert_sha256', 'exclude_from_sub_types', 'node_guids')
 EMPTY_FIELDS = ('server_description', 'host_header', 'path', 'fingerprint', 'verify_peer_cert_by_name',
@@ -58,7 +59,7 @@ def desired_host(inbound_id, target_port, address):
 
 
 def publication_plan(conn, address):
-    required = set(desired_host(1, 33176, address)) | {'id', 'group_id', 'created_at', 'updated_at'}
+    required = set(desired_host(1, env_port('VPN_STANDARD_TLS_PORT'), address)) | {'id', 'group_id', 'created_at', 'updated_at'}
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(hosts)')}
     require(required <= columns, 'Native x-ui hosts schema is not supported')
     additions, existing = [], 0
@@ -90,7 +91,7 @@ def verify_tls_listeners(address):
     context = ssl.create_default_context()
     for port in PORTS.values():
         try:
-            with socket.create_connection(('127.0.0.1', port), timeout=4) as raw:
+            with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=4) as raw:
                 with context.wrap_socket(raw, server_hostname=str(address)):
                     pass
         except (OSError, ssl.SSLError):
@@ -192,7 +193,7 @@ def main():
         if action == 'rollback':
             child.add_argument('backup', type=Path)
         else:
-            child.add_argument('--address', type=ipaddress.IPv4Address, default=ipaddress.IPv4Address('212.22.70.156'))
+            child.add_argument('--address', type=ipaddress.IPv4Address, default=ipaddress.IPv4Address(env_value('VPN_ENTRY_ADDRESS')))
             if action == 'apply':
                 child.add_argument('--backup-root', type=Path, default=BACKUPS)
     args = parser.parse_args()

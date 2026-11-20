@@ -1,15 +1,15 @@
 # Grafana по HTTPS
 
-Адрес HTTPS: `https://212.22.70.156/grafana/`. Корень `/` перенаправляет в `/grafana/`. Grafana принимает те же логин и пароль, которые сохранены в `.local/access.md`.
+Адрес HTTPS: `${VPN_GRAFANA_URL}`. Корень `/` перенаправляет в `/grafana/`. Grafana принимает те же логин и пароль, которые сохранены в `.local/access.md`.
 
-Отдельный контейнер `vpn-grafana-https` занимает только TCP `443`. Он передаёт запросы существующей Grafana на `127.0.0.1:3000`. Порт `80`, настройки самой Grafana, Prometheus, Alertmanager, подписки и VPN не меняются. На `443` доступны только маршруты Grafana. Для входа предпочтителен HTTPS.
+Отдельный контейнер `vpn-grafana-https` занимает только TCP `${VPN_MONITORING_HTTPS_PORT}`. Он передаёт запросы существующей Grafana на `${VPN_LOOPBACK_IP}:${VPN_GRAFANA_PORT}`. Порт `${VPN_MONITORING_HTTP_PORT}`, настройки самой Grafana, Prometheus, Alertmanager, подписки и VPN не меняются. На `${VPN_MONITORING_HTTPS_PORT}` доступны только маршруты Grafana. Для входа предпочтителен HTTPS.
 
 Шаблон `monitoring/nginx-grafana-https.conf` переписывает канонические HTTP-ссылки, которые Grafana отдаёт в HTML, JSON и редиректах, на HTTPS. Статические файлы, API и WebSocket проходят по тому же пути. HTTPS-прокси добавляет флаг `Secure` к cookie; старый HTTP-фронт не меняется.
 
 Установщик `scripts/install_grafana_https.py` на входном сервере принимает шаблон и публичный IPv4:
 
 ```bash
-sudo python3 install_grafana_https.py install nginx-grafana-https.conf --address 212.22.70.156
+sudo python3 install_grafana_https.py install nginx-grafana-https.conf --address "${VPN_ENTRY_ADDRESS}"
 ```
 
 Он отказывается занимать уже используемый порт или перезаписывать существующую установку. Сначала проверяет сертификат и конфигурацию nginx, затем проверяет TLS, перенаправление, страницу входа и API. Используется тот же закреплённый образ nginx, что у HTTP-мониторинга.

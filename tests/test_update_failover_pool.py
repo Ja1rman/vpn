@@ -5,6 +5,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from test_environment import configure
+configure()
+from vpn_env import env, port as env_port, expand
 
 from failover_variant import build_pool
 from update_failover_pool import append_plan, selector_guard
@@ -14,11 +17,11 @@ import update_failover_pool as updater
 class FailoverPoolAppendTests(unittest.TestCase):
     def pool(self, names):
         sites, definitions = [], []
-        addresses = {'primary': '1.1.1.1', 'backup': '8.8.8.8', 'next': '9.9.9.9'}
+        addresses = {'primary': env('VPN_TEST_DNS_ADDRESS_A'), 'backup': env('VPN_TEST_DNS_ADDRESS_B'), 'next': env('VPN_TEST_DNS_ADDRESS_C')}
         for name in names:
             sites.append({'name': name, 'address': addresses[name], 'source': 'main', 'tag': name})
             definitions.append({'tag': name, 'protocol': 'vless', 'settings': {
-                'address': addresses[name], 'port': 443,
+                'address': addresses[name], 'port': env_port('VPN_EXIT_TLS_PORT'),
                 'id': '00000000-0000-4000-8000-000000000001', 'encryption': 'none',
             }, 'streamSettings': {'network': 'raw', 'security': 'tls'}})
         return build_pool({'egresses': sites, 'probe_urls': ['https://probe.invalid/health']},

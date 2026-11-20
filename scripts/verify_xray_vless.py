@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Probe the existing native Xray VLESS entries with an isolated client core."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 from contextlib import contextmanager
 import copy
@@ -23,7 +24,7 @@ from verify_auto_onboarding import dns_probe
 MAIN = Path('/usr/local/x-ui/bin/config.json')
 DATABASE = Path('/etc/x-ui/x-ui.db')
 XRAY = MAIN.with_name('xray-linux-amd64')
-API = '127.0.0.1:62789'
+API = env_expand('${VPN_LOOPBACK_IP}:${VPN_XUI_API_PORT}')
 REFLECTOR = 'https://api.ipify.org/'
 
 
@@ -85,12 +86,12 @@ def outbound(config, port, address):
 @contextmanager
 def isolated_client(remote):
     with socket.socket() as reserved:
-        reserved.bind(('127.0.0.1', 0))
+        reserved.bind((env_value('VPN_LOOPBACK_IP'), 0))
         port = reserved.getsockname()[1]
     account = (secrets.token_hex(12), secrets.token_hex(24))
     config = {
         'log': {'loglevel': 'none', 'access': 'none'},
-        'inbounds': [{'tag': 'probe', 'listen': '127.0.0.1', 'port': port, 'protocol': 'socks',
+        'inbounds': [{'tag': 'probe', 'listen': env_value('VPN_LOOPBACK_IP'), 'port': port, 'protocol': 'socks',
                       'settings': {'auth': 'password', 'udp': True,
                                    'accounts': [{'user': account[0], 'pass': account[1]}]}}],
         'outbounds': [remote],
@@ -105,7 +106,7 @@ def isolated_client(remote):
             for _ in range(30):
                 require(process.poll() is None, 'The isolated Xray client failed to start')
                 try:
-                    with socket.create_connection(('127.0.0.1', port), timeout=.2):
+                    with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=.2):
                         break
                 except OSError:
                     time.sleep(.1)
@@ -127,7 +128,7 @@ def reflect_ipv4(port, account):
     result = subprocess.run(
         ['curl', '-q', '--silent', '--fail', '--ipv4', '--noproxy', '', '--proto', '=https',
          '--connect-timeout', '4', '--max-time', '8', '--max-filesize', '128',
-         '--proxy', f'socks5h://127.0.0.1:{port}', '--config', '-', REFLECTOR],
+         '--proxy', env_expand(f'socks5h://${{VPN_LOOPBACK_IP}}:{port}'), '--config', '-', REFLECTOR],
         input=private.encode(), capture_output=True, timeout=10)
     require(result.returncode == 0, 'The native VLESS HTTPS probe failed (curl ' + str(result.returncode) + ')')
     address = ipaddress.IPv4Address(result.stdout.decode('ascii').strip())
@@ -160,8 +161,8 @@ def probe(config, port, address, expected):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--ports', type=int, nargs='+', default=[33172, 46738])
-    parser.add_argument('--dial-address', default='127.0.0.1', choices=['127.0.0.1', '212.22.70.156'])
+    parser.add_argument('--ports', type=int, nargs='+', default=[env_port('VPN_VLESS_NATIVE_PORT'), env_port('VPN_VLESS_AUTH_PORT')])
+    parser.add_argument('--dial-address', default=env_value('VPN_LOOPBACK_IP'), choices=[env_value('VPN_LOOPBACK_IP'), env_value('VPN_ENTRY_ADDRESS')])
     parser.add_argument('--expected-ip', type=ipaddress.IPv4Address)
     args = parser.parse_args()
     try:

@@ -32,6 +32,9 @@ def main():
         raise ValueError('Unknown deployment component')
     if component == 'mtproto' and not os.environ.get('VPN_MTPROTO_SECRET'):
         raise ValueError('The mtproto component requires VPN_MTPROTO_SECRET')
+    if component == 'mtproto' and not all(os.environ.get(name) for name in
+                                         ('VPN_TELEGRAM_SOCKS_USERNAME', 'VPN_TELEGRAM_SOCKS_PASSWORD')):
+        raise ValueError('The Telegram component requires the SOCKS credentials in protected environment variables')
     inv, hosts = hydrate()
     subprocess.run([sys.executable, str(ROOT / 'scripts/render.py')], check=True)
     subprocess.run([sys.executable, str(ROOT / 'scripts/certificates.py')], check=True)

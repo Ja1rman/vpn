@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Hot-add pool outbounds and replace selectors, while retaining existing sessions."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import json
 from datetime import datetime, timezone
 import fcntl
@@ -13,7 +14,7 @@ import time
 from verify_vpn import udp_dns
 
 XRAY='/opt/vpn-balancer/xray'
-API='--server=127.0.0.1:11091'
+API=env_expand('--server=${VPN_LOOPBACK_IP}:${VPN_BALANCER_API_PORT}')
 CONFIG=Path('/etc/vpn-balancer/config.json')
 
 def persist(config):
@@ -45,13 +46,13 @@ def verify_singleton_candidates(config):
             raise RuntimeError('Priority selector also matched a retained runtime handler; use a distinct tag')
 
 def probe_outbound(outbound,folder):
-    canary={'log':{'loglevel':'error'},'inbounds':[{'listen':'127.0.0.1','port':28200,'protocol':'socks','settings':{'auth':'noauth'}}], 'outbounds':[outbound]}
+    canary={'log':{'loglevel':'error'},'inbounds':[{'listen':env_value('VPN_LOOPBACK_IP'),'port':env_port('VPN_TEST_CANARY_PORT'),'protocol':'socks','settings':{'auth':'noauth'}}], 'outbounds':[outbound]}
     path=folder/'canary.json';path.write_text(json.dumps(canary))
     log=(folder/'canary.log').open('wb')
     proc=subprocess.Popen([XRAY,'run','-config',str(path)],stdout=log,stderr=log,env=dict(os.environ,XRAY_LOCATION_ASSET='/opt/vpn-balancer'))
     try:
         time.sleep(1)
-        subprocess.run(['curl','--fail','--silent','--show-error','--max-time','20','--proxy','socks5h://127.0.0.1:28200','https://www.google.com/generate_204'],stdout=subprocess.DEVNULL,check=True)
+        subprocess.run(['curl','--fail','--silent','--show-error','--max-time','20','--proxy',env_expand('socks5h://${VPN_LOOPBACK_IP}:${VPN_TEST_CANARY_PORT}'),'https://www.google.com/generate_204'],stdout=subprocess.DEVNULL,check=True)
     finally:proc.terminate();proc.wait(timeout=10)
 
 def main():
@@ -94,14 +95,14 @@ def main():
             deadline = time.monotonic() + 40
             while True:
                 result = subprocess.run(['curl','-q','--fail','--silent','--max-time','6',
-                                         '--noproxy','','--proxy','socks5h://127.0.0.1:11090',
+                                         '--noproxy','','--proxy',env_expand('socks5h://${VPN_LOOPBACK_IP}:${VPN_BALANCER_SOCKS_PORT}'),
                                          'https://www.google.com/generate_204'], capture_output=True)
                 if result.returncode == 0:
                     break
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Pool did not pass HTTPS after the Observatory update')
                 time.sleep(1)
-            udp_dns(11090)
+            udp_dns(env_port('VPN_BALANCER_SOCKS_PORT'))
             if subprocess.check_output(['systemctl','show','vpn-balancer','--property=MainPID','--value']).strip()!=before_pid:
                 raise RuntimeError('Balancer PID changed unexpectedly')
             with (backup/'lock').open('a') as lock:

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Import real subscription VLESS URIs into isolated native Xray clients."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import base64
 from contextlib import closing
@@ -19,7 +20,7 @@ from verify_xray_vless import isolated_client, reflect_ipv4, require, XRAY
 
 
 ADDRESS = Settings.address
-TLS_PORTS = {46738: 33176, 22799: 33177, 16715: 33178, 18398: 33179}
+TLS_PORTS = {env_port('VPN_VLESS_AUTH_PORT'): env_port('VPN_STANDARD_TLS_PORT'), env_port('VPN_PRIMARY_VLESS_PORT'): env_port('VPN_PRIMARY_TLS_PORT'), env_port('VPN_NL_RELAY_VLESS_PORT'): env_port('VPN_NL_RELAY_TLS_PORT'), env_port('VPN_THIRD_VLESS_PORT'): env_port('VPN_THIRD_TLS_PORT')}
 
 
 def read_feed(port, sub_id, trust):
@@ -99,11 +100,11 @@ def verify(candidate):
     accounts = list(dict.fromkeys(sub_id for sub_id, _uid in account_rows(Settings())))
     require(accounts, 'No active standard VLESS subscribers are available')
     counters, examples, failures = {}, {}, []
-    for feed_port in (2096, 2097):
+    for feed_port in (env_port('VPN_SUBSCRIPTION_PORT'), env_port('VPN_AUTO_SUBSCRIPTION_PORT')):
         count = 0
         for sub_id in accounts:
             links = read_feed(feed_port, sub_id, trust)
-            require(links and (feed_port != 2097 or len(links) == 1), 'Unexpected VLESS profile count')
+            require(links and (feed_port != env_port('VPN_AUTO_SUBSCRIPTION_PORT') or len(links) == 1), 'Unexpected VLESS profile count')
             for line in links:
                 remote = import_profile(line, candidate)
                 count += 1

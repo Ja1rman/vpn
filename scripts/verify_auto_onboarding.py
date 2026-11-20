@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Verify a derived VPN Auto TLS profile without editing x-ui or its users."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import base64
 from contextlib import closing, contextmanager, ExitStack
@@ -12,6 +13,7 @@ import secrets
 import socket
 import sqlite3
 import ssl
+import struct
 import subprocess
 import tempfile
 import time
@@ -24,8 +26,8 @@ from failover_subscription import (InvalidSubscription, LoopbackHTTPSConnection,
 
 DATABASE = Path('/etc/x-ui/x-ui.db')
 SING_BOX = '/opt/vpn-compatible-vless/sing-box'
-LOOPBACK = '127.0.0.1'
-POOL_PORT = 11092
+LOOPBACK = env_value('VPN_LOOPBACK_IP')
+POOL_PORT = env_port('VPN_FAILOVER_SOCKS_PORT')
 REFLECTOR = 'https://api.ipify.org/'
 
 
@@ -89,7 +91,7 @@ def derived_profile(settings):
         require(link.scheme == 'vless' and link.hostname == settings.address and link.port == settings.tls_target_port
                 and link.username == str(UUID(expected_uid)) and link.password is None and not link.path
                 and options == {'type': ['tcp'], 'security': ['tls'], 'encryption': ['none'],
-                                'packetEncoding': ['xudp']},
+                                'packetEncoding': ['xudp'], 'sni': [settings.address], 'fp': ['chrome']},
                 'The derived TLS profile did not match its x-ui account and expected transport')
         return link
     raise ProbeError('No eligible VLESS profile was available in the x-ui feed')
@@ -113,7 +115,8 @@ def temporary_client(profile, dial_address, account):
                                    'users': [{'username': username, 'password': password}]})
         config['outbounds'].append({'type': 'vless', 'tag': tag, 'server': dial_address,
                                     'server_port': profile.port, 'uuid': uid, 'packet_encoding': 'xudp',
-                                    'tls': {'enabled': True, 'server_name': profile.hostname}})
+                                    'tls': {'enabled': True, 'server_name': profile.hostname,
+                                            'utls': {'enabled': True, 'fingerprint': 'chrome'}}})
         config['route']['rules'].append({'inbound': [tag], 'action': 'route', 'outbound': tag})
     with tempfile.TemporaryDirectory(prefix='vpn-auto-onboarding-') as directory:
         path = Path(directory) / 'client.json'
@@ -174,7 +177,7 @@ def dns_probe(port, account):
         address, relay_port = stream.read(4), int.from_bytes(stream.read(2), 'big')
         require(address in (b'\0' * 4, socket.inet_aton(LOOPBACK)) and relay_port, 'Unexpected SOCKS UDP relay')
         query_id = secrets.token_bytes(2)
-        header = b'\0\0\0\x01\x01\x01\x01\x01\x00\x35'
+        header = b'\0\0\0\x01' + socket.inet_aton(env_value('VPN_DNS_ADDRESS')) + struct.pack('!H', env_port('VPN_DNS_PORT'))
         query = query_id + b'\x01\x00\x00\x01\0\0\0\0\0\0\x07example\x03com\0\0\x01\0\x01'
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
             udp.settimeout(8)

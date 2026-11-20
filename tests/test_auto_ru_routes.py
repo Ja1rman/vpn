@@ -5,6 +5,9 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from test_environment import configure
+configure()
+from vpn_env import env, port as env_port, expand
 
 from auto_ru_routes import DIRECT_TAG, HOP_TAG, INSPECT_RULE_TAG, RU_DOMAIN, RU_RULE_TAG, SNIFF_TAG, add_direct_ru
 from failover_variant import build_pool
@@ -13,16 +16,16 @@ from update_failover_pool import append_plan, config_sites
 
 class AutoRuRoutesTests(unittest.TestCase):
     def pool(self, count=2, *, direct=False):
-        pairs = [('first', '1.1.1.1'), ('second', '8.8.8.8'), ('third', '9.9.9.9')][:count]
+        pairs = [('first', env('VPN_TEST_DNS_ADDRESS_A')), ('second', env('VPN_TEST_DNS_ADDRESS_B')), ('third', env('VPN_TEST_DNS_ADDRESS_C'))][:count]
         settings = {
             'egresses': [{'name': name, 'address': address, 'source': 'main', 'tag': name}
                          for name, address in pairs],
             'probe_urls': ['https://example.com/generate_204'],
         }
         if direct:
-            settings['direct_ru_ipv4'] = '8.8.4.4'
+            settings['direct_ru_ipv4'] = env('VPN_TEST_ROUTE_ADDRESS')
         main = {'outbounds': [
-            {'tag': name, 'protocol': 'vless', 'settings': {'address': address, 'port': 443},
+            {'tag': name, 'protocol': 'vless', 'settings': {'address': address, 'port': env_port('VPN_EXIT_TLS_PORT')},
              'streamSettings': {'security': 'tls'}} for name, address in pairs
         ]}
         legacy = {'inbounds': [{'tag': 'pool-socks'}, {'tag': 'api'}], 'outbounds': [],
@@ -32,12 +35,12 @@ class AutoRuRoutesTests(unittest.TestCase):
     def test_optional_split_keeps_existing_priority_chain_and_loopback_listeners(self):
         base = self.pool()
         snapshot = copy.deepcopy(base)
-        result = add_direct_ru(base, '8.8.4.4')
+        result = add_direct_ru(base, env('VPN_TEST_ROUTE_ADDRESS'))
         self.assertEqual(result, self.pool(direct=True))
         self.assertEqual(base, snapshot)
         self.assertEqual(result['outbounds'][:len(base['outbounds'])], base['outbounds'])
         self.assertEqual(result['inbounds'][:-1], base['inbounds'])
-        self.assertEqual((result['inbounds'][-1]['listen'], result['inbounds'][-1]['port']), ('127.0.0.1', 11094))
+        self.assertEqual((result['inbounds'][-1]['listen'], result['inbounds'][-1]['port']), (env('VPN_LOOPBACK_IP'), env_port('VPN_AUTO_SNIFF_PORT')))
         self.assertTrue(result['inbounds'][-1]['sniffing']['routeOnly'])
         self.assertEqual(result['routing']['balancers'], base['routing']['balancers'])
         self.assertEqual(result['observatory'], base['observatory'])
@@ -48,13 +51,13 @@ class AutoRuRoutesTests(unittest.TestCase):
         self.assertFalse(result['inbounds'][-1]['settings']['udp'])
         self.assertEqual(rules[2]['inboundTag'], ['pool-socks', SNIFF_TAG])
         self.assertEqual((rules[3]['inboundTag'], rules[3]['ip'], rules[3]['port']),
-                         (['pool-socks'], ['0.0.0.0/0'], '80,443'))
+                         (['pool-socks'], [expand('${VPN_BIND_IP}/0')], expand('${VPN_WEB_HTTP_PORT},${VPN_WEB_HTTPS_PORT}')))
         self.assertEqual(rules[4]['balancerTag'], 'vpn-pool')
         self.assertEqual(rules[4]['inboundTag'], ['pool-socks', SNIFF_TAG])
         self.assertEqual(rules[5:], base['routing']['rules'][3:])
         direct = next(o for o in result['outbounds'] if o['tag'] == DIRECT_TAG)
         self.assertNotIn('sendThrough', direct)
-        self.assertEqual(direct['settings']['finalRules'][0]['ip'], ['geoip:private', '8.8.4.4/32'])
+        self.assertEqual(direct['settings']['finalRules'][0]['ip'], ['geoip:private', expand('${VPN_TEST_ROUTE_ADDRESS}/32')])
 
     def test_regexp_matches_only_the_requested_suffixes(self):
         domain = re.compile(RU_DOMAIN.removeprefix('regexp:'))
@@ -72,7 +75,7 @@ class AutoRuRoutesTests(unittest.TestCase):
             append_plan(self.pool(), current)
 
         exposed = copy.deepcopy(current)
-        exposed['inbounds'][-1]['listen'] = '0.0.0.0'
+        exposed['inbounds'][-1]['listen'] = env('VPN_BIND_IP')
         wrong_hop = copy.deepcopy(current)
         next(o for o in wrong_hop['outbounds'] if o['tag'] == HOP_TAG)['settings']['port'] += 1
         missing_self_block = copy.deepcopy(current)

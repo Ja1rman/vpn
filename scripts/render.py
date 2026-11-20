@@ -9,6 +9,7 @@ import secrets
 import shutil
 import subprocess
 from priority_pool import build_priority_chain
+from vpn_env import env, port, expand, load_json
 
 ROOT = Path(__file__).resolve().parents[1]
 ENCRYPTED_PROTOCOLS = {"vless", "hysteria", "trojan", "shadowsocks", "vmess"}
@@ -67,8 +68,8 @@ def build_balancer(inventory):
     config = {
         "log": {"loglevel": "warning"},
         "inbounds": [
-            {"tag": "pool-socks", "listen": "127.0.0.1", "port": settings["socks_port"], "protocol": "socks", "settings": {"auth": "noauth", "udp": True}},
-            {"tag": "api", "listen": "127.0.0.1", "port": settings["api_port"], "protocol": "tunnel", "settings": {"address": "127.0.0.1"}}
+            {"tag": "pool-socks", "listen": env('VPN_LOOPBACK_IP'), "port": settings["socks_port"], "protocol": "socks", "settings": {"auth": "noauth", "udp": True}},
+            {"tag": "api", "listen": env('VPN_LOOPBACK_IP'), "port": settings["api_port"], "protocol": "tunnel", "settings": {"address": env('VPN_LOOPBACK_IP')}}
         ],
         "outbounds": [{"tag": "blocked", "protocol": "blackhole", "settings": {}}] + outbounds,
         "api": {"tag": "api", "services": ["HandlerService", "RoutingService", "StatsService"]},
@@ -98,30 +99,36 @@ def build_balancer(inventory):
     return config
 
 def prometheus_config(inv):
+    loopback = env('VPN_LOOPBACK_IP')
+    monitoring = inv['monitoring']
+    endpoints = {name: monitoring.get(name + '_port', port(variable)) for name, variable in [
+        ('prometheus', 'VPN_PROMETHEUS_PORT'), ('alertmanager', 'VPN_ALERTMANAGER_PORT'),
+        ('blackbox', 'VPN_BLACKBOX_PORT')]}
+    local = lambda value: f'{loopback}:{value}'
     base = {"global": {"scrape_interval": "15s", "evaluation_interval": "15s", "external_labels": {"cluster": "vpn"}},
             "rule_files": ["/etc/vpn-monitoring/prometheus/alerts.yml"],
-            "alerting": {"alertmanagers": [{"static_configs": [{"targets": ["127.0.0.1:9093"]}]}]}, "scrape_configs": []}
+            "alerting": {"alertmanagers": [{"static_configs": [{"targets": [local(endpoints['alertmanager'])]}]}]}, "scrape_configs": []}
     jobs = base["scrape_configs"]
-    for job, port in [("prometheus",9090),("alertmanager",9093),("blackbox",9115)]:
-        jobs.append({"job_name":job,"static_configs":[{"targets":[f"127.0.0.1:{port}"]}]})
+    for job, listen_port in endpoints.items():
+        jobs.append({"job_name":job,"static_configs":[{"targets":[local(listen_port)]}]})
     jobs.append({"job_name":"node", "scheme":"https", "tls_config":{"ca_file":"/etc/vpn-monitoring/tls/ca.crt","cert_file":"/etc/vpn-monitoring/tls/client.crt","key_file":"/etc/vpn-monitoring/tls/client.key"}, "file_sd_configs":[{"files":["/etc/vpn-monitoring/prometheus/nodes.json"]}]})
-    targets=[{"targets":[f"127.0.0.1:{inv['monitoring']['node_port']}"],"labels":{"host":inv['entry']['name']}}]
+    targets=[{"targets":[local(inv['monitoring']['node_port'])],"labels":{"host":inv['entry']['name']}}]
     targets += [{"targets":[f"{n['address']}:{inv['monitoring']['node_port']}"],"labels":{"host":n['name']}} for n in inv['nodes']]
     def probe_ports(host, default):
         ports=host.get('vpn_probe_ports',default)
         if not isinstance(ports,list) or not ports or any(type(p) is not int or not 1<=p<=65535 for p in ports):
             raise ValueError('vpn_probe_ports must be a nonempty list of TCP ports')
         return list(dict.fromkeys(ports))
-    entry_ports=probe_ports(inv['entry'],[33172,58663])+[inv['balancer']['socks_port']]
-    probes=[{"targets":[f"127.0.0.1:{p}" for p in dict.fromkeys(entry_ports)],"labels":{"host":"entry"}}]
-    probes += [{"targets":[f"{n['address']}:{p}" for p in probe_ports(n,[n.get('vpn_port',443)])],"labels":{"host":n['name']}} for n in inv['nodes']]
+    entry_ports=probe_ports(inv['entry'],[port('VPN_VLESS_NATIVE_PORT'),port('VPN_HTTP_LEGACY_PORT')])+[inv['balancer']['socks_port']]
+    probes=[{"targets":[local(p) for p in dict.fromkeys(entry_ports)],"labels":{"host":"entry"}}]
+    probes += [{"targets":[f"{n['address']}:{p}" for p in probe_ports(n,[n.get('vpn_port',port('VPN_EXIT_TLS_PORT'))])],"labels":{"host":n['name']}} for n in inv['nodes']]
     if 'failover' in inv:
         probes += [
-            {"targets":["127.0.0.1:33174"],"labels":{"host":"entry","service":"failover","role":"frontend"}},
-            {"targets":["127.0.0.1:46738"],"labels":{"host":"entry","service":"failover","role":"auth"}},
-            {"targets":["127.0.0.1:2097"],"labels":{"host":"entry","service":"failover","role":"subscription"}},
+            {"targets":[local(port('VPN_AUTO_REALITY_PORT')),local(port('VPN_AUTO_TLS_PUBLIC_PORT'))],"labels":{"host":"entry","service":"failover","role":"frontend"}},
+            {"targets":[local(port('VPN_VLESS_AUTH_PORT'))],"labels":{"host":"entry","service":"failover","role":"auth"}},
+            {"targets":[local(port('VPN_AUTO_SUBSCRIPTION_PORT'))],"labels":{"host":"entry","service":"failover","role":"subscription"}},
         ]
-    jobs.append({"job_name":"vpn-tcp", "metrics_path":"/probe", "params":{"module":["tcp_connect"]}, "file_sd_configs":[{"files":["/etc/vpn-monitoring/prometheus/vpn-targets.json"]}], "relabel_configs":[{"source_labels":["__address__"],"target_label":"__param_target"},{"source_labels":["__param_target"],"target_label":"instance"},{"target_label":"__address__","replacement":"127.0.0.1:9115"}]})
+    jobs.append({"job_name":"vpn-tcp", "metrics_path":"/probe", "params":{"module":["tcp_connect"]}, "file_sd_configs":[{"files":["/etc/vpn-monitoring/prometheus/vpn-targets.json"]}], "relabel_configs":[{"source_labels":["__address__"],"target_label":"__param_target"},{"source_labels":["__param_target"],"target_label":"instance"},{"target_label":"__address__","replacement":local(endpoints['blackbox'])}]})
     urls=inv.get('failover',{}).get('probe_urls',[inv['balancer']['probe_url']])
     egresses=[{"targets":urls,"labels":{"host":"entry","service":"legacy","probe_module":"http_vpn"}}]
     if 'failover' in inv:
@@ -131,12 +138,19 @@ def prometheus_config(inv):
                                     {"source_labels":["__param_target"],"target_label":"instance"},
                                     {"source_labels":["probe_module"],"target_label":"__param_module"},
                                     {"action":"labeldrop","regex":"probe_module"},
-                                    {"target_label":"__address__","replacement":"127.0.0.1:9115"}]})
+                                    {"target_label":"__address__","replacement":local(endpoints['blackbox'])}]})
     return base, targets, probes
+
+def render_monitoring_templates(directory):
+    # Only VPN_* placeholders are expanded: Nginx/Grafana variables stay intact.
+    for relative in ('compose.yml', 'blackbox.yml', 'nginx.conf', 'nginx-grafana-https.conf',
+                     'grafana/provisioning/datasources/prometheus.yml'):
+        path = directory / relative
+        path.write_text(expand(path.read_text()))
 
 def main():
     os.umask(0o077)
-    inv=json.loads((ROOT/'inventory/hosts.json').read_text())
+    inv=load_json(ROOT/'inventory/hosts.json')
     for n in [inv['entry']]+inv['nodes']:
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,40}',n['name']): raise ValueError('Invalid node name')
         if n['network_budget_mbps'] <= 0: raise ValueError('network_budget_mbps must be positive')
@@ -145,13 +159,12 @@ def main():
     out=ROOT/'.local/rendered'
     out.mkdir(parents=True,exist_ok=True)
     shutil.copytree(ROOT/'monitoring',out/'monitoring',dirs_exist_ok=True)
+    render_monitoring_templates(out/'monitoring')
     private_alertmanager=ROOT/'.local/alertmanager.yml'
     if private_alertmanager.exists():
         alertmanager=out/'monitoring/alertmanager/alertmanager.yml'
         shutil.copyfile(private_alertmanager,alertmanager)
         alertmanager.chmod(0o600)
-    compose=out/'monitoring/compose.yml'
-    compose.write_text(compose.read_text().replace('212.22.70.156',inv['entry']['address']))
     write_json(out/'balancer/config.json', build_balancer(inv))
     prom, targets, probes = prometheus_config(inv)
     write_json(out/'monitoring/prometheus/prometheus.yml', prom)

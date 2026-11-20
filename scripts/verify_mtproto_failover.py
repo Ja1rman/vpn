@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Verify MTProto through isolated Auto pool/mtg copies; never change live services."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 from contextlib import ExitStack
 import copy
@@ -34,7 +35,7 @@ def need(condition, message):
 
 def reserve_port(stack):
     sock = stack.enter_context(socket.socket())
-    sock.bind(('127.0.0.1', 0))
+    sock.bind((env_value('VPN_LOOPBACK_IP'), 0))
     return sock, sock.getsockname()[1]
 
 
@@ -46,8 +47,8 @@ def isolated_pool(original, failed, ports, dead_ports):
          'Unsupported Auto listener configuration')
     need(set(ports) == set(inbounds), 'Incomplete isolated listener mapping')
     for tag, inbound in inbounds.items():
-        need(inbound.get('listen') == '127.0.0.1', 'Expected existing loopback-only Auto listeners')
-        inbound.update(listen='127.0.0.1', port=ports[tag])
+        need(inbound.get('listen') == env_value('VPN_LOOPBACK_IP'), 'Expected existing loopback-only Auto listeners')
+        inbound.update(listen=env_value('VPN_LOOPBACK_IP'), port=ports[tag])
     balances = config['routing']['balancers']
     need(len(balances) == 3 and 1 <= failed <= 3 and len(dead_ports) == failed,
          'Expected a three-exit priority pool and one to three failures')
@@ -72,11 +73,11 @@ def isolated_pool(original, failed, ports, dead_ports):
         else:
             need(len(settings.get('vnext', [])) == 1, 'Unsupported VLESS endpoint format')
             endpoint = settings['vnext'][0]
-        endpoint.update(address='127.0.0.1', port=port)
+        endpoint.update(address=env_value('VPN_LOOPBACK_IP'), port=port)
     for outbound in config['outbounds']:
         if outbound['tag'] == 'vpn-auto-sniff-hop':
             need('pool-ip-sniff' in ports and outbound['protocol'] == 'socks' and
-                 outbound['settings'].get('address') == '127.0.0.1', 'Unsupported Auto inspection hop')
+                 outbound['settings'].get('address') == env_value('VPN_LOOPBACK_IP'), 'Unsupported Auto inspection hop')
             outbound['settings']['port'] = ports['pool-ip-sniff']
     config['observatory']['probeInterval'] = '1s'
     config['log'] = {'loglevel': 'warning', 'access': 'none'}
@@ -99,15 +100,15 @@ def isolated_mtg(source, mtg_port, socks_port):
             match = re.fullmatch(r'\s*bind-to\s*=\s*("[^"\\\r\n]*")\s*(?:#.*)?', line.strip())
             need(match is not None and isinstance(json.loads(match[1]), str),
                  'Expected a generated single-line MTProto listener')
-            line = 'bind-to = ' + json.dumps('127.0.0.1:' + str(mtg_port)) + '\n'
+            line = 'bind-to = ' + json.dumps(env_expand('${VPN_LOOPBACK_IP}:') + str(mtg_port)) + '\n'
             replacements['bind-to'] += 1
         elif section == 'network' and re.match(r'^\s*proxies\s*=', line):
             match = re.fullmatch(r'\s*proxies\s*=\s*(\[[^\r\n]*\])\s*(?:#.*)?', line.strip())
             need(match is not None,
                  'Expected a single-line SOCKS proxy list')
-            need(json.loads(match[1]) == ['socks5://127.0.0.1:11092'],
+            need(json.loads(match[1]) == [env_expand('socks5://${VPN_LOOPBACK_IP}:${VPN_FAILOVER_SOCKS_PORT}')],
                  'MTProto must use only the existing Auto SOCKS proxy')
-            line = 'proxies = [' + json.dumps('socks5://127.0.0.1:' + str(socks_port)) + ']\n'
+            line = 'proxies = [' + json.dumps(env_expand('socks5://${VPN_LOOPBACK_IP}:') + str(socks_port)) + ']\n'
             replacements['proxies'] += 1
         lines.append(line)
     need(replacements == {'bind-to': 1, 'proxies': 1}, 'Could not isolate both MTProto settings')
@@ -146,7 +147,7 @@ def wait_listener(port, process, timeout=8):
     while time.monotonic() < deadline:
         need(process.poll() is None, 'An isolated test process exited early')
         try:
-            with socket.create_connection(('127.0.0.1', port), timeout=0.3):
+            with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=0.3):
                 return
         except OSError:
             time.sleep(0.1)
@@ -155,7 +156,7 @@ def wait_listener(port, process, timeout=8):
 
 def https_exit(port, timeout=5):
     result = subprocess.run(['curl', '--fail', '--silent', '--connect-timeout', '2',
-                             '--max-time', str(timeout), '--proxy', 'socks5h://127.0.0.1:' + str(port),
+                             '--max-time', str(timeout), '--proxy', env_expand('socks5h://${VPN_LOOPBACK_IP}:') + str(port),
                              'https://api.ipify.org'], capture_output=True, timeout=timeout+2)
     if result.returncode:
         return None
@@ -222,7 +223,7 @@ def verify(args):
                                        stdout=mtg_log, stderr=mtg_log, start_new_session=True)
             processes.append(process)
             wait_listener(mtg_port, process, timeout=15)
-            result = subprocess.run([sys.executable, str(args.client), '--host', '127.0.0.1',
+            result = subprocess.run([sys.executable, str(args.client), '--host', env_value('VPN_LOOPBACK_IP'),
                                      '--port', str(mtg_port), '--config', str(mtg_path), '--dc', '2'],
                                     capture_output=True, text=True, timeout=30)
             need(all(child.poll() is None for child in processes),

@@ -4,6 +4,7 @@
 Run on the entry server as root with a staged inventory and sibling outbounds/
 directory. Existing exits, priorities, listeners, and the old VPN are retained.
 """
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -33,8 +34,8 @@ XRAY = ASSETS / 'xray'
 CONFIG = Path('/etc/vpn-failover/pool.json')
 LOCK = Path('/run/lock/vpn-failover-pool-update.lock')
 BACKUPS = Path('/var/backups/vpn-infra')
-SOCKS = 11092
-API = 11093
+SOCKS = env_port('VPN_FAILOVER_SOCKS_PORT')
+API = env_port('VPN_AUTO_API_PORT')
 BLOCKED = {'tag': 'blocked', 'protocol': 'blackhole', 'settings': {}}
 
 
@@ -58,7 +59,7 @@ def config_sites(config):
     inbounds = [i for i in config['inbounds'] if i['tag'] != SNIFF_TAG]
     listeners = {i['tag']: (i.get('listen'), i.get('port')) for i in inbounds}
     require(len(inbounds) == 2 and listeners == {
-        'api': ('127.0.0.1', API), 'pool-socks': ('127.0.0.1', SOCKS),
+        'api': (env_value('VPN_LOOPBACK_IP'), API), 'pool-socks': (env_value('VPN_LOOPBACK_IP'), SOCKS),
     }, 'This configuration is not the isolated VPN Auto pool')
     expected = dict(config, inbounds=inbounds, outbounds=[BLOCKED] + sites + bridges,
                     routing={'domainStrategy': 'AsIs', 'rules': BASE_RULES + rules, 'balancers': balancers})
@@ -103,7 +104,7 @@ def command(args, phase, backup=None, *, data=None, timeout=15):
 
 
 def api(command_name, *args, address=None, backup=None):
-    return command([str(XRAY), 'api', command_name, '--server=' + (address or f'127.0.0.1:{API}'),
+    return command([str(XRAY), 'api', command_name, '--server=' + (address or env_expand(f'${{VPN_LOOPBACK_IP}}:{API}')),
                     '--timeout=6', *map(str, args)], 'api-' + command_name, backup)
 
 
@@ -164,7 +165,7 @@ def read_exact(sock, count):
 
 
 def udp_dns(port, account=None):
-    with socket.create_connection(('127.0.0.1', port), timeout=6) as control:
+    with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=6) as control:
         method = b'\x02' if account else b'\x00'
         control.sendall(b'\x05\x01' + method)
         require(read_exact(control, 2) == b'\x05' + method, 'SOCKS UDP greeting failed')
@@ -179,10 +180,10 @@ def udp_dns(port, account=None):
                 'SOCKS UDP relay did not return a local IPv4 socket')
         token = secrets.token_bytes(2)
         query = token + b'\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01'
-        target = b'\x00\x00\x00\x01\x01\x01\x01\x01\x00\x35'
+        target = b'\x00\x00\x00\x01' + socket.inet_aton(env_value('VPN_DNS_ADDRESS')) + struct.pack('!H', env_port('VPN_DNS_PORT'))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
             udp.settimeout(8)
-            udp.connect(('127.0.0.1', relay_port))
+            udp.connect((env_value('VPN_LOOPBACK_IP'), relay_port))
             udp.send(target + query)
             response = udp.recv(4096)
         require(len(response) >= 22 and response[:10] == target and response[10:12] == token
@@ -197,7 +198,7 @@ def https_probe(port, urls, account=None, backup=None, label='probe'):
             config += 'proxy-user = ' + json.dumps(':'.join(account)) + '\n'
         try:
             output = command(['curl', '-q', '--silent', '--show-error', '--fail', '--max-time', '12',
-                              '--connect-timeout', '6', '--noproxy', '', '--proxy', f'socks5h://127.0.0.1:{port}',
+                              '--connect-timeout', '6', '--noproxy', '', '--proxy', env_expand(f'socks5h://${{VPN_LOOPBACK_IP}}:{port}'),
                               '--output', '/dev/null', '--write-out', '%{http_code}', '--config', '-'],
                              f'{label}-https-{index + 1}', backup, data=config.encode())
             if output == b'204':
@@ -220,7 +221,7 @@ def isolated_probe(config, sites, urls, backup):
     sockets = [socket.socket() for _ in sites]
     try:
         for sock in sockets:
-            sock.bind(('127.0.0.1', 0))
+            sock.bind((env_value('VPN_LOOPBACK_IP'), 0))
         ports = [sock.getsockname()[1] for sock in sockets]
     finally:
         for sock in sockets:
@@ -229,7 +230,7 @@ def isolated_probe(config, sites, urls, backup):
     inbounds, rules = [], []
     for index, (site, listen) in enumerate(zip(sites, ports)):
         tag = 'probe-' + str(index)
-        inbounds.append({'listen': '127.0.0.1', 'port': listen, 'tag': tag, 'protocol': 'socks',
+        inbounds.append({'listen': env_value('VPN_LOOPBACK_IP'), 'port': listen, 'tag': tag, 'protocol': 'socks',
                          'settings': {'auth': 'password', 'accounts': [{'user': user, 'pass': password}], 'udp': True}})
         rules.append({'type': 'field', 'inboundTag': [tag], 'outboundTag': site['tag']})
     with tempfile.TemporaryDirectory(prefix='vpn-auto-', dir='/tmp') as work, (backup / 'canary.log').open('wb') as log:
@@ -332,7 +333,7 @@ def rollback(backup, force=False):
 
 
 def update(inventory, *, check_only=False):
-    settings = json.loads(inventory.read_bytes())['failover']
+    settings = load_network_json(inventory)['failover']
     urls = settings['probe_urls']
     require(isinstance(urls, list) and bool(urls) and all(
         urlsplit(url).scheme == 'https' and urlsplit(url).hostname and not urlsplit(url).username for url in urls),

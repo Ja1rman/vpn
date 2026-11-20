@@ -4,14 +4,14 @@ datasources:
     uid: prometheus
     type: prometheus
     access: proxy
-    url: http://127.0.0.1:9090
+    url: http://${VPN_LOOPBACK_IP}:${VPN_PROMETHEUS_PORT}
     isDefault: true
     editable: false
   - name: Alertmanager
     uid: alertmanager
     type: alertmanager
     access: proxy
-    url: http://127.0.0.1:9093
+    url: http://${VPN_LOOPBACK_IP}:${VPN_ALERTMANAGER_PORT}
     jsonData:
       implementation: prometheus
     editable: false

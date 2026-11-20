@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Root on entry: validate and hot-reload only Alertmanager, with rollback."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 from datetime import datetime, timezone
 import json
 import os
@@ -19,11 +20,11 @@ def pid():
 
 
 def reload_config():
-    request = urllib.request.Request('http://127.0.0.1:9093/-/reload', data=b'', method='POST')
+    request = urllib.request.Request(env_expand('http://${VPN_LOOPBACK_IP}:${VPN_ALERTMANAGER_PORT}/-/reload'), data=b'', method='POST')
     with urllib.request.urlopen(request, timeout=15) as response:
         if response.status != 200:
             raise RuntimeError('Alertmanager rejected reload')
-    with urllib.request.urlopen('http://127.0.0.1:9093/-/ready', timeout=10) as response:
+    with urllib.request.urlopen(env_expand('http://${VPN_LOOPBACK_IP}:${VPN_ALERTMANAGER_PORT}/-/ready'), timeout=10) as response:
         if response.status != 200:
             raise RuntimeError('Alertmanager is not ready')
 

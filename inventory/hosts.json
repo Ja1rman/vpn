@@ -1,21 +1,23 @@
 {
   "entry": {
     "name": "entry",
-    "address": "212.22.70.156",
+    "address": "${VPN_ENTRY_ADDRESS}",
     "user": "marat",
     "interface": "eth0",
     "network_budget_mbps": 1000,
     "vpn_probe_ports": [
-      33172,
-      33173,
-      58663,
-      8443
+      "${VPN_VLESS_NATIVE_PORT}",
+      "${VPN_COMPAT_VLESS_PORT}",
+      "${VPN_HTTP_LEGACY_PORT}",
+      "${VPN_MTPROTO_PORT}",
+      "${VPN_MTPROTO_PUBLIC_PORT}",
+      "${VPN_TELEGRAM_SOCKS_PORT}"
     ]
   },
   "nodes": [
     {
       "name": "breeze-reef",
-      "address": "144.31.34.165",
+      "address": "${VPN_NL_ADDRESS}",
       "user": "root",
       "interface": "eth0",
       "network_budget_mbps": 1000,
@@ -29,15 +31,15 @@
         ".local/outbounds/breeze-reef-tcp.json": "pool-breeze-reef-tcp-v1"
       },
       "vpn_probe_ports": [
-        443,
-        8443
+        "${VPN_EXIT_TLS_PORT}",
+        "${VPN_EXIT_RESERVE_PORT}"
       ]
     }
   ],
   "balancer": {
     "strategy": "priority",
-    "socks_port": 11090,
-    "api_port": 11091,
+    "socks_port": "${VPN_BALANCER_SOCKS_PORT}",
+    "api_port": "${VPN_BALANCER_API_PORT}",
     "probe_interval": "10s",
     "probe_url": "https://www.google.com/generate_204",
     "priority_order": [
@@ -45,16 +47,37 @@
       "pool-breeze-reef-tcp-v1"
     ],
     "reserve_outbounds": [
-      {"name": "ihor", "file": ".local/outbounds/legacy-reserve-ihor.json"},
-      {"name": "srv-41969", "file": ".local/outbounds/legacy-reserve-srv-41969.json"}
+      {
+        "name": "ihor",
+        "file": ".local/outbounds/legacy-reserve-ihor.json"
+      },
+      {
+        "name": "srv-41969",
+        "file": ".local/outbounds/legacy-reserve-srv-41969.json"
+      }
     ]
   },
   "failover": {
-    "direct_ru_ipv4": "212.22.70.156",
+    "direct_ru_ipv4": "${VPN_ENTRY_ADDRESS}",
     "egresses": [
-      {"name": "ihor", "address": "45.9.74.57", "source": "main", "tag": "ihor-vless-1-5jj7e3veas"},
-      {"name": "breeze-reef", "address": "144.31.34.165", "source": "legacy", "tag": "pool-breeze-reef-tcp-v1"},
-      {"name": "srv-41969", "address": "13.143.134.214", "source": "main", "tag": "srv-41969-vless-t361oghssd"}
+      {
+        "name": "ihor",
+        "address": "${VPN_PRIMARY_EXIT_ADDRESS}",
+        "source": "main",
+        "tag": "ihor-vless-1-5jj7e3veas"
+      },
+      {
+        "name": "breeze-reef",
+        "address": "${VPN_NL_ADDRESS}",
+        "source": "legacy",
+        "tag": "pool-breeze-reef-tcp-v1"
+      },
+      {
+        "name": "srv-41969",
+        "address": "${VPN_THIRD_EXIT_ADDRESS}",
+        "source": "main",
+        "tag": "srv-41969-vless-t361oghssd"
+      }
     ],
     "probe_urls": [
       "https://www.google.com/generate_204",
@@ -62,10 +85,10 @@
     ]
   },
   "monitoring": {
-    "node_port": 19100,
-    "prometheus_port": 9090,
-    "grafana_port": 3000,
-    "alertmanager_port": 9093,
-    "blackbox_port": 9115
+    "node_port": "${VPN_NODE_PORT}",
+    "prometheus_port": "${VPN_PROMETHEUS_PORT}",
+    "grafana_port": "${VPN_GRAFANA_PORT}",
+    "alertmanager_port": "${VPN_ALERTMANAGER_PORT}",
+    "blackbox_port": "${VPN_BLACKBOX_PORT}"
   }
 }

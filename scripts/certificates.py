@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Create private monitoring CA and mTLS certificates; CA never leaves laptop."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,7 @@ def issue(ca, folder, name, san, client=False):
 
 def main():
     os.umask(0o077)
-    inv=json.loads((ROOT/'inventory/hosts.json').read_text())
+    inv=load_network_json(ROOT/'inventory/hosts.json')
     ca=ROOT/'.local/pki';ca.mkdir(exist_ok=True)
     if not (ca/'ca.crt').exists():
         run('openssl','req','-x509','-newkey','rsa:3072','-nodes','-sha256','-days','3650','-subj','/CN=VPN monitoring CA','-keyout',str(ca/'ca.key'),'-out',str(ca/'ca.crt'))
@@ -31,7 +32,7 @@ def main():
     for src,dst in [('cert.pem','client.crt'),('key.pem','client.key'),('ca.crt','ca.crt')]:shutil.copyfile(client/src,dest/dst)
     for node in [inv['entry']]+inv['nodes']:
         folder=ca/node['name']
-        if not (folder/'cert.pem').exists():issue(ca,folder,node['name'],f'DNS:{node["name"]},IP:{node["address"]},IP:127.0.0.1')
+        if not (folder/'cert.pem').exists():issue(ca,folder,node['name'],env_expand(f"DNS:{node['name']},IP:{node['address']},IP:${{VPN_LOOPBACK_IP}}"))
         dest=ROOT/'.local/rendered/nodes'/node['name']
         for filename in ['cert.pem','key.pem','ca.crt']:shutil.copyfile(folder/filename,dest/filename)
         (dest/'web.yml').write_text('tls_server_config:\n  cert_file: /etc/vpn-node/cert.pem\n  key_file: /etc/vpn-node/key.pem\n  client_auth_type: RequireAndVerifyClientCert\n  client_ca_file: /etc/vpn-node/ca.crt\n  min_version: TLS12\n')

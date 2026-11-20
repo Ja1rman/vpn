@@ -7,15 +7,16 @@ import json
 import os
 from pathlib import Path
 import re
+from vpn_env import configured_values, load_json
 
 ROOT = Path(__file__).resolve().parents[1]
 SECRET_NAMES = ('VPN_SSH_PASSWORDS_JSON', 'VPN_SSH_KNOWN_HOSTS',
                 'VPN_OUTBOUNDS_JSON', 'VPN_MONITORING_PASSWORD',
-                'VPN_MONITORING_TLS_JSON')
+                'VPN_MONITORING_TLS_JSON', 'VPN_ENDPOINTS_JSON')
 
 
 def inventory():
-    inv = json.loads((ROOT / 'inventory/hosts.json').read_text())
+    inv = load_json(ROOT / 'inventory/hosts.json')
     hosts = [inv['entry']] + inv['nodes']
     for host in hosts:
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,40}', host['name']):
@@ -64,10 +65,19 @@ def local_secrets():
               'VPN_SSH_KNOWN_HOSTS': (ROOT / '.local/ssh/known_hosts').read_text(),
               'VPN_OUTBOUNDS_JSON': json.dumps(outbounds),
               'VPN_MONITORING_PASSWORD': access['password'],
-              'VPN_MONITORING_TLS_JSON': json.dumps(tls)}
+              'VPN_MONITORING_TLS_JSON': json.dumps(tls),
+              'VPN_ENDPOINTS_JSON': json.dumps(configured_values())}
     private_alertmanager = ROOT / '.local/alertmanager.yml'
     if private_alertmanager.exists():
         values['VPN_ALERTMANAGER_CONFIG'] = private_alertmanager.read_text()
+    mtproto = ROOT / '.local/mtproto/access.json'
+    if mtproto.exists():
+        values['VPN_MTPROTO_SECRET'] = json.loads(mtproto.read_text())['secret']
+    socks = ROOT / '.local/telegram-socks/access.json'
+    if socks.exists():
+        socks_access = json.loads(socks.read_text())
+        values['VPN_TELEGRAM_SOCKS_USERNAME'] = socks_access['username']
+        values['VPN_TELEGRAM_SOCKS_PASSWORD'] = socks_access['password']
     for name, value in values.items():
         if not value or len(value.encode()) >= 48 * 1024:
             raise ValueError(name + ' is empty or exceeds the GitHub secret size limit')
@@ -88,6 +98,8 @@ def mask_values(value):
     elif isinstance(value, list):
         for child in value:
             mask_values(child)
+    elif type(value) is int:
+        mask_values(str(value))
     elif isinstance(value, str):
         for part in {value, *value.splitlines()}:
             if len(part) >= 4:
@@ -126,6 +138,11 @@ def hydrate():
                             mask_values(json.loads(raw))
                         except ValueError:
                             mask_values(raw.strip("\"'"))
+    endpoints = secret_json('VPN_ENDPOINTS_JSON')
+    if not isinstance(endpoints, dict) or not endpoints or any(
+            not re.fullmatch(r'VPN_[A-Z0-9_]+', key) for key in endpoints):
+        raise ValueError('VPN_ENDPOINTS_JSON must contain named deployment settings')
+    write_private(ROOT / '.local/network-env.json', json.dumps(endpoints, indent=2) + '\n')
     inv, hosts = inventory()
     passwords = secret_json('VPN_SSH_PASSWORDS_JSON')
     outbounds = secret_json('VPN_OUTBOUNDS_JSON')

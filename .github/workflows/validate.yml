@@ -11,12 +11,17 @@ jobs:
         with:
           persist-credentials: false
       - name: Python safety checks
+        env:
+          VPN_TEST_MODE: '1'
         run: python3 -m unittest discover -s tests -v
       - name: Shell syntax
         run: for script in scripts/*.sh; do bash -n "$script"; done
       - name: Prometheus rules and transitions
-        run: >-
-          docker run --rm -v "$PWD:/work" -w /work/tests
-          --entrypoint /bin/promtool
-          prom/prometheus:v3.13.4@sha256:87861b8cf91579109319ebc300f3f1060e6da9c05d6ae8ad15a20c879e84e32e
-          test rules alerts.test.yml
+        env:
+          VPN_TEST_MODE: '1'
+        run: |
+          python3 -B scripts/test_environment.py --alerts .local/test-env/alerts.test.yml
+          docker run --rm -v "$PWD:/work" -w /work \
+            --entrypoint /bin/promtool \
+            prom/prometheus:v3.13.4@sha256:87861b8cf91579109319ebc300f3f1060e6da9c05d6ae8ad15a20c879e84e32e \
+            test rules .local/test-env/alerts.test.yml

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Install only the independent failover subscription and its certificate timer."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
+import base64
 from contextlib import closing
 import fcntl
 import grp
@@ -17,13 +19,16 @@ import stat
 import subprocess
 import tempfile
 import time
+from urllib.parse import parse_qs, unquote, urlsplit
+from uuid import UUID
+import vpn_env
 
 
 NAME = "vpn-failover-subscription"
 SERVICE = NAME + ".service"
 CERT_SERVICE = NAME + "-cert.service"
 CERT_TIMER = NAME + "-cert.timer"
-ADDRESS, PORT, AUTO_TLS_PORT = "212.22.70.156", 2097, 33175
+ADDRESS, PORT, AUTO_TLS_PORT = env_value('VPN_ENTRY_ADDRESS'), env_port('VPN_AUTO_SUBSCRIPTION_PORT'), env_port('VPN_AUTO_TLS_PUBLIC_PORT')
 CONFIG = Path("/etc") / NAME
 RUNTIME = Path("/opt") / NAME
 TLS = CONFIG / "tls.pem"
@@ -213,7 +218,7 @@ def probe_listener(port=PORT):
     trust = ssl.create_default_context()
     for _ in range(20):
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=2) as raw:
+            with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=2) as raw:
                 with trust.wrap_socket(raw, server_hostname=ADDRESS):
                     return
         except OSError:
@@ -224,21 +229,20 @@ def probe_listener(port=PORT):
 def current_ids():
     uri = DATABASE.resolve(strict=True).as_uri() + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True, timeout=3)) as db:
-        return [sub_id for sub_id, in db.execute("""SELECT DISTINCT c.sub_id FROM clients AS c
-            JOIN client_inbounds AS ci ON ci.client_id=c.id
-            JOIN inbounds AS i ON i.id=ci.inbound_id
-            WHERE i.port=46738 AND i.enable=1 AND c.enable=1 AND c.sub_id != ''
-            ORDER BY c.id LIMIT 32""")]
+        return [sub_id for sub_id, in db.execute(env_expand("SELECT DISTINCT c.sub_id FROM clients AS c\n            JOIN client_inbounds AS ci ON ci.client_id=c.id\n            JOIN inbounds AS i ON i.id=ci.inbound_id\n            WHERE i.port=${VPN_VLESS_AUTH_PORT} AND i.enable=1 AND c.enable=1 AND c.sub_id != ''\n            ORDER BY c.id LIMIT 32"))]
 
 
-def subscription_body(port, sub_id):
+def subscription_body(port, sub_id, user_agent=None):
     from failover_subscription import LoopbackHTTPSConnection, MAX_BODY, SUB_PATH
 
     path = "/sub/" + sub_id
     if not SUB_PATH.fullmatch(path):
         raise RuntimeError("Unexpected subscription identifier format")
     with closing(LoopbackHTTPSConnection(ADDRESS, port, context=ssl.create_default_context(), timeout=3)) as client:
-        client.request("GET", path, headers={"Accept-Encoding": "identity"})
+        headers = {"Accept-Encoding": "identity"}
+        if user_agent:
+            headers['User-Agent'] = user_agent
+        client.request("GET", path, headers=headers)
         response = client.getresponse()
         if response.status == 404:
             return None
@@ -250,14 +254,77 @@ def subscription_body(port, sub_id):
         return data
 
 
-def check_existing_feeds(port, feeds):
+def check_existing_feeds(port, feeds, allow_profile_update=False):
     for sub_id, body in feeds.items():
-        if subscription_body(port, sub_id) != body:
+        current = subscription_body(port, sub_id)
+        if current == body:
+            continue
+        if not allow_profile_update:
             raise RuntimeError("An existing VPN Auto profile changed")
+        try:
+            old = base64.b64decode(body, validate=True).decode().splitlines()
+            new = base64.b64decode(current, validate=True).decode().splitlines()
+            if len(old) != 1 or len(new) != 1:
+                raise ValueError()
+            old, new = urlsplit(old[0]), urlsplit(new[0])
+            query = parse_qs(new.query, keep_blank_values=True, strict_parsing=True, max_num_fields=32)
+            expected_query = {'type': ['tcp'], 'security': ['tls'], 'encryption': ['none'],
+                              'packetEncoding': ['xudp'], 'sni': [ADDRESS], 'fp': ['chrome']}
+            valid = (old.scheme == 'vless' and old.password is None and not old.path
+                     and UUID(old.username) == UUID(new.username)
+                     and old.hostname == new.hostname == ADDRESS
+                     and new.scheme == 'vless' and new.port == AUTO_TLS_PORT
+                     and new.password is None and not new.path
+                     and query == expected_query)
+            if not valid:
+                raise ValueError()
+        except (TypeError, ValueError, UnicodeError):
+            raise RuntimeError('A VPN Auto update changed credentials or the verified TLS endpoint') from None
 
 
-def upgrade(source):
-    """Validate the existing feeds on a private test port, then replace only :2097."""
+def environment_payload():
+    return {RUNTIME / 'vpn_env.py': Path(vpn_env.__file__).read_bytes(),
+            RUNTIME / 'vpn.env.json': (json.dumps(vpn_env.configured_values(), sort_keys=True) + '\n').encode()}
+
+
+def check_nekobox_feeds(port, feeds):
+    """Verify the app-specific format without changing any existing VLESS identity."""
+    agents = ('NekoBox/Android/1.3.9 (Prefer ClashMeta Format)',
+              'NekoBox/Android/1.4.2 (Prefer ClashMeta Format)')
+    for sub_id in feeds:
+        body = subscription_body(port, sub_id)
+        try:
+            lines = base64.b64decode(body, validate=True).decode().splitlines()
+            if len(lines) != 1:
+                raise ValueError()
+            link = urlsplit(lines[0])
+            options = parse_qs(link.query, keep_blank_values=True, strict_parsing=True)
+            if options.get('security') != ['tls']:
+                expected = None
+            else:
+                safe_query = {'type': ['tcp'], 'security': ['tls'], 'encryption': ['none'],
+                              'packetEncoding': ['xudp'], 'sni': [ADDRESS], 'fp': ['chrome']}
+                if (link.scheme != 'vless' or link.hostname != ADDRESS or link.port != AUTO_TLS_PORT
+                        or link.password is not None or link.path or options != safe_query):
+                    raise ValueError()
+                expected = {'outbounds': [{'type': 'vless', 'tag': unquote(link.fragment),
+                    'server': ADDRESS, 'server_port': AUTO_TLS_PORT, 'uuid': str(UUID(link.username)),
+                    'packet_encoding': 'xudp', 'multiplex': {'enabled': False},
+                    'tls': {'enabled': True, 'server_name': ADDRESS, 'insecure': False,
+                            'utls': {'enabled': True, 'fingerprint': 'chrome'}}}]}
+            for agent in agents:
+                response = subscription_body(port, sub_id, agent)
+                if expected is None:
+                    if response != body:
+                        raise ValueError()
+                elif json.loads(response) != expected:
+                    raise ValueError()
+        except (TypeError, ValueError, UnicodeError):
+            raise RuntimeError('The NekoBox feed changed its VLESS identity or secure transport') from None
+
+
+def upgrade(source, allow_profile_update=False):
+    'Validate the existing feeds on a private test port, then replace only :${VPN_AUTO_SUBSCRIPTION_PORT}.'
     gid = check_account()
     user = pwd.getpwnam(NAME).pw_uid
     command("systemctl", "is-active", "--quiet", SERVICE)
@@ -268,12 +335,14 @@ def upgrade(source):
     probe_listener(AUTO_TLS_PORT)
     code = source.read_bytes()
     compile(code, APPLICATION.name, "exec")
-    payload = {APPLICATION: code, INSTALLER: Path(__file__).read_bytes()}
-    previous = {path: path.read_bytes() for path in payload}
+    payload = {APPLICATION: code, INSTALLER: Path(__file__).read_bytes(), **environment_payload()}
+    if any(path.is_symlink() for path in payload):
+        raise RuntimeError('Subscription support files must be regular files')
+    previous = {path: path.read_bytes() if path.exists() else None for path in payload}
     if payload == previous:
         return {"updated": False}
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
-        probe.bind(("127.0.0.1", 0))
+        probe.bind((env_value('VPN_LOOPBACK_IP'), 0))
         test_port = probe.getsockname()[1]
     feeds = {sub_id: body for sub_id in current_ids() if (body := subscription_body(PORT, sub_id)) is not None}
     if not feeds:
@@ -285,19 +354,25 @@ def upgrade(source):
         staging.chmod(0o750)
         candidate = staging / APPLICATION.name
         write_exclusive(candidate, code, mode=0o640, group=gid)
-        process = subprocess.Popen(["/usr/bin/python3", "-B", str(candidate), "--listen", "127.0.0.1",
+        for path, data in environment_payload().items():
+            write_exclusive(staging / path.name, data, mode=0o640, group=gid)
+        process = subprocess.Popen(["/usr/bin/python3", "-B", str(candidate), "--listen", env_value('VPN_LOOPBACK_IP'),
                                     "--port", str(test_port), "--tls-cert", str(TLS), "--tls-key", str(TLS)],
                                    user=user, group=gid, extra_groups=[],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             probe_listener(test_port)
-            check_existing_feeds(test_port, feeds)
+            check_existing_feeds(test_port, feeds, allow_profile_update)
+            check_nekobox_feeds(test_port, feeds)
         finally:
             process.terminate()
             process.wait(timeout=5)
 
         def replace(paths, suffix):
             for path, data in paths.items():
+                if data is None:
+                    path.unlink(missing_ok=True)
+                    continue
                 replacement = staging / (path.name + suffix)
                 write_exclusive(replacement, data, mode=0o640, group=gid)
                 os.replace(replacement, path)
@@ -306,20 +381,22 @@ def upgrade(source):
             replace(payload, ".new")
             command("systemctl", "restart", SERVICE)
             probe_listener()
-            check_existing_feeds(PORT, feeds)
+            check_existing_feeds(PORT, feeds, allow_profile_update)
+            check_nekobox_feeds(PORT, feeds)
         except BaseException:
             replace(previous, ".old")
             command("systemctl", "restart", SERVICE)
             probe_listener()
             raise
-    return {"updated": True, "unchanged_existing_feeds": len(feeds)}
+    return {"updated": True, "verified_existing_feeds": len(feeds),
+            "tls_profile_update_allowed": allow_profile_update}
 
 
 def install(source):
     code = source.read_bytes()
     # Syntax check without importing or starting the application as root.
     compile(code, APPLICATION.name, "exec")
-    payload = {APPLICATION: code, INSTALLER: Path(__file__).read_bytes(),
+    payload = {APPLICATION: code, INSTALLER: Path(__file__).read_bytes(), **environment_payload(),
                UNITS / SERVICE: SERVICE_TEXT.encode(), UNITS / CERT_SERVICE: CERT_TEXT.encode(),
                UNITS / CERT_TIMER: TIMER_TEXT.encode()}
     if RUNTIME.is_symlink() or CONFIG.is_symlink() or any(path.is_symlink() for path in payload):
@@ -343,7 +420,7 @@ def install(source):
             or not all(unit_is_absent(unit) for unit in (SERVICE, CERT_SERVICE, CERT_TIMER))):
         raise RuntimeError("Dedicated subscription paths, account or systemd unit names are already in use")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("0.0.0.0", PORT))
+        probe.bind((env_value('VPN_BIND_IP'), PORT))
     dirs, units = [], []
     user_created = group_created = False
     try:
@@ -403,6 +480,7 @@ def main():
     update = commands.add_parser("upgrade")
     update.add_argument("--service-script", type=Path,
                         default=Path(__file__).with_name("failover_subscription.py"))
+    update.add_argument('--allow-profile-update', action='store_true')
     commands.add_parser("sync-certificate")
     args = parser.parse_args()
     try:
@@ -411,7 +489,7 @@ def main():
         if args.command == "install":
             result = install(args.service_script)
         elif args.command == "upgrade":
-            result = upgrade(args.service_script)
+            result = upgrade(args.service_script, args.allow_profile_update)
         else:
             result = {"certificate_changed": sync_certificate()}
         print(json.dumps(result))

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Add Russian TLD routing to the running VPN Auto pool only."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 from contextlib import contextmanager
 import copy
@@ -29,7 +30,7 @@ def curl(url, socks=None, *, literal=False, head=False):
     if socks is None:
         args += ['--noproxy', '*']
     else:
-        args += ['--noproxy', '', '--socks5' if literal else '--socks5-hostname', f'127.0.0.1:{socks}']
+        args += ['--noproxy', '', '--socks5' if literal else '--socks5-hostname', env_expand(f'${{VPN_LOOPBACK_IP}}:{socks}')]
     if head:
         args += ['--head', '--output', '/dev/null']
     return pool.command(args + [url], 'HTTPS canary')
@@ -69,7 +70,7 @@ def free_ports(n):
     sockets = [socket.socket() for _ in range(n)]
     try:
         for s in sockets:
-            s.bind(('127.0.0.1', 0))
+            s.bind((env_value('VPN_LOOPBACK_IP'), 0))
         return [s.getsockname()[1] for s in sockets]
     finally:
         for s in sockets:
@@ -195,7 +196,7 @@ def main():
     parser.add_argument('inventory', type=Path)
     args = parser.parse_args()
     try:
-        address = json.loads(args.inventory.read_text())['failover']['direct_ru_ipv4']
+        address = load_network_json(args.inventory)['failover']['direct_ru_ipv4']
         with pool.locked():
             apply(address)
     except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as exc:

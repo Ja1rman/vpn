@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Render private SMTP settings and optionally hot-reload Alertmanager."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import json
 import os
@@ -24,8 +25,8 @@ def build_config(settings, base):
         raise ValueError('Invalid SMTP sender or recipient')
     if not re.fullmatch(r'[a-zA-Z0-9.-]+', settings['host']):
         raise ValueError('Invalid SMTP hostname')
-    port = int(settings.get('port', 465))
-    if port not in {465, 587}:
+    port = int(settings.get('port', env_port('VPN_SMTP_PORT')))
+    if port not in {env_port('VPN_SMTP_PORT'), env_port('VPN_SMTP_STARTTLS_PORT')}:
         raise ValueError('Use implicit TLS465 or STARTTLS587')
     # Fail closed if the tracked routing template changes; preserve all grouping,
     # inhibition and timing rules verbatim rather than reconstructing them.
@@ -45,7 +46,7 @@ def build_config(settings, base):
         return '    email_configs:\n' + ''.join(
             '      - to: ' + json.dumps(address) + '\n'
             '        send_resolved: ' + json.dumps(send_resolved) + '\n'
-            '        force_implicit_tls: ' + json.dumps(port == 465) + '\n'
+            '        force_implicit_tls: ' + json.dumps(port == env_port('VPN_SMTP_PORT')) + '\n'
             '        headers:\n          Subject: ' + json.dumps(title) + '\n'
             '        text: ' + json.dumps(text) + '\n'
             for address in recipients
@@ -59,19 +60,7 @@ def build_config(settings, base):
 
 def check_auth(settings):
     # Credentials travel on SSH stdin, never in argv, environment dumps or logs.
-    code = '''import json,ssl,smtplib,sys
-c=json.load(sys.stdin)
-try:
- if int(c['port'])==465:
-  smtp=smtplib.SMTP_SSL(c['host'],int(c['port']),timeout=20,context=ssl.create_default_context())
- else:
-  smtp=smtplib.SMTP(c['host'],int(c['port']),timeout=20);smtp.ehlo();smtp.starttls(context=ssl.create_default_context())
- with smtp:
-  smtp.ehlo();smtp.login(c['username'],c['password'])
- print('SMTP TLS and authentication verified')
-except Exception as e:
- print('SMTP authentication check failed: '+type(e).__name__);sys.exit(1)
-'''
+    code = env_expand("import json,ssl,smtplib,sys\nc=json.load(sys.stdin)\ntry:\n if int(c['port'])==${VPN_SMTP_PORT}:\n  smtp=smtplib.SMTP_SSL(c['host'],int(c['port']),timeout=20,context=ssl.create_default_context())\n else:\n  smtp=smtplib.SMTP(c['host'],int(c['port']),timeout=20);smtp.ehlo();smtp.starttls(context=ssl.create_default_context())\n with smtp:\n  smtp.ehlo();smtp.login(c['username'],c['password'])\n print('SMTP TLS and authentication verified')\nexcept Exception as e:\n print('SMTP authentication check failed: '+type(e).__name__);sys.exit(1)\n")
     remote(inventory()['entry']['name'], 'python3 -c ' + shlex.quote(code), json.dumps(settings).encode())
 
 

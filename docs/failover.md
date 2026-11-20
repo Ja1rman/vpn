@@ -9,13 +9,13 @@
 1. Порядок хостов в `nodes`.
 2. Порядок транспортов в `outbounds` каждого хоста.
 
-Текущий основной — `breeze-reef` VLESS/REALITY/XHTTP443 (`pool-breeze-reef-0`). Далее идут VLESS/REALITY TCP8443 (`pool-breeze-reef-tcp-v1`) и Hysteria UDP55625 (`pool-breeze-reef-hysteria-v2`) на том же NL-хосте `144.31.34.165`. После них настроены независимые VLESS-резервы `ihor` и `srv-41969`. Это позволяет обычным профилям продолжать работу при полном отказе NL.
+Текущий основной — `breeze-reef` VLESS/REALITY/XHTTP ${VPN_EXIT_TLS_PORT} (`pool-breeze-reef-0`). Далее идут VLESS/REALITY TCP ${VPN_EXIT_RESERVE_PORT} (`pool-breeze-reef-tcp-v1`) и Hysteria UDP ${VPN_EXIT_HYSTERIA_PORT} (`pool-breeze-reef-hysteria-v2`) на том же NL-хосте `${VPN_NL_ADDRESS}`. После них настроены независимые VLESS-резервы `ihor` и `srv-41969`. Это позволяет обычным профилям продолжать работу при полном отказе NL.
 
 Независимые резервы заданы в `balancer.reserve_outbounds` как `name` и `file`. Файлы находятся в `.local/outbounds/`, содержат зашифрованный outbound и включаются в существующий Secret `VPN_OUTBOUNDS_JSON`. Renderer добавляет их после всех исходных транспортов, с тегами `pool-reserve-<name>`. После изменений выполните `render.py` и `vpnctl.py update-pool`. Проверка новых выходов, обновление маршрутов и откат выполняются через API работающего пула.
 
 С 20 октября порядок явно закреплён `balancer.priority_order`: основной XHTTP, затем TCP. Hysteria и новые узлы добавляются после них в обычном порядке inventory. TCP-резерв добавлен после измерения Hysteria менее 1 Мбит/с; основной XHTTP оказался быстрее TCP и сохранён. [Измерения и Android-профиль](android-and-performance.md).
 
-Private Hysteria outbound содержит тот же Salamander mask, что и сервер. Его пароль хранится только в `.local/outbounds/` и GitHub Secret `VPN_OUTBOUNDS_JSON`. В текущей паре версий Xray нативные Hysteria UDP DATAGRAM показали нестабильную доставку. Поэтому только для этого резерва UDP передаётся через XUDP в Hysteria streams: `mux.enabled=true`, `concurrency=-1`, `xudpConcurrency=16`, `xudpProxyUDP443=allow`. Обычный TCP не мультиплексируется. Настройки NL-сервера и клиентских VPN-профилей для этого не меняются. Потоки надёжного транспорта могут увеличивать задержку UDP при потерях; основной VLESS этим изменением не затронут.
+Private Hysteria outbound содержит тот же Salamander mask, что и сервер. Его пароль хранится только в `.local/outbounds/` и GitHub Secret `VPN_OUTBOUNDS_JSON`. В текущей паре версий Xray нативные Hysteria UDP DATAGRAM показали нестабильную доставку. Поэтому только для этого резерва UDP передаётся через XUDP в Hysteria streams: `mux.enabled=true`, `concurrency=-1`, `xudpConcurrency=16`, `разрешённым XUDP для UDP`. Обычный TCP не мультиплексируется. Настройки NL-сервера и клиентских VPN-профилей для этого не меняются. Потоки надёжного транспорта могут увеличивать задержку UDP при потерях; основной VLESS этим изменением не затронут.
 
 ## Переключение и восстановление
 
@@ -48,9 +48,9 @@ python3 scripts/vpnctl.py update-pool
 
 `scripts/test_priority_failover.py` создаёт изолированные три VLESS-выхода и HTTP/UDP echo-сервисы только на loopback. Все здоровы → только A; отказ A → только B; отказ A+B → только C; восстановление A → только A; отказ всех → блокировка. Проверяются повторные TCP-запросы и UDP на каждой ступени. Рабочие сервисы не останавливаются.
 
-`scripts/verify_priority_backup.py --expected-ip 144.31.34.165` запускает отдельный клон реального пула на временных loopback-портах. Только в этом клоне основной адрес заменяется на неслушающий порт; проверяются четыре HTTPS-запроса через реальный резервный транспорт и четыре отдельных UDP DNS-ассоциации. Рабочая конфигурация не меняется.
+`scripts/verify_priority_backup.py --expected-ip "${VPN_NL_ADDRESS}"` запускает отдельный клон реального пула на временных loopback-портах. Только в этом клоне основной адрес заменяется на неслушающий порт; проверяются четыре HTTPS-запроса через реальный резервный транспорт и четыре отдельных UDP DNS-ассоциации. Рабочая конфигурация не меняется.
 
-Переход production на priority выполнен горячо 16 октября 2026, 16:40 МСК. Уже открытый HTTPS CONNECT-туннель пережил обновление на том же сокете; до и после выход `144.31.34.165`. Основной runtime JSON и PID x-ui `935652`/балансировщика `992031` сохранились. TCP и UDP-проверки прошли.
+Переход production на priority выполнен горячо 16 октября 2026, 16:40 МСК. Уже открытый HTTPS CONNECT-туннель пережил обновление на том же сокете; до и после использовался выход NL. Основной runtime JSON и PID x-ui `935652`/балансировщика `992031` сохранились. TCP и UDP-проверки прошли.
 
 В 17:03 МСК исправленный Hysteria добавлен под новым tag без перезапуска. Его реальный резервный путь предварительно прошёл четыре HTTPS и четыре UDP DNS-проверки в клоне с отключённым основным. Уже открытый HTTPS CONNECT-туннель снова пережил hot update на том же сокете; основной runtime JSON не изменился. Снимок этого обновления: `/var/backups/vpn-infra/pool-20261016T140322077934Z`.
 

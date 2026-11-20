@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Isolated three-exit primary/backup TCP+UDP test. Never stops real services."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import http.server
 import json
 import os
@@ -22,25 +23,25 @@ ENV = dict(os.environ, XRAY_LOCATION_ASSET='/opt/vpn-balancer')
 
 def free_port():
     with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
+        sock.bind((env_value('VPN_LOOPBACK_IP'), 0))
         return sock.getsockname()[1]
 
 
 def udp_echo(port):
     nonce = secrets.token_bytes(12)
-    with socket.create_connection(('127.0.0.1', port), timeout=5) as control:
+    with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=5) as control:
         control.sendall(b'\x05\x01\x00')
         if control.recv(2) != b'\x05\x00':
             raise RuntimeError('SOCKS greeting failed')
-        control.sendall(b'\x05\x03\x00\x01' + socket.inet_aton('127.0.0.1') + b'\x00\x00')
+        control.sendall(b'\x05\x03\x00\x01' + socket.inet_aton(env_value('VPN_LOOPBACK_IP')) + b'\x00\x00')
         reply = control.recv(262)
         if len(reply) < 10 or reply[1:4] != b'\x00\x00\x01':
             raise RuntimeError('UDP ASSOCIATE failed')
         address = socket.inet_ntoa(reply[4:8])
-        relay = ('127.0.0.1' if address == '0.0.0.0' else address, struct.unpack('!H', reply[8:10])[0])
+        relay = (env_value('VPN_LOOPBACK_IP') if address == env_value('VPN_BIND_IP') else address, struct.unpack('!H', reply[8:10])[0])
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
             udp.settimeout(5)
-            udp.sendto(b'\x00\x00\x00\x01' + socket.inet_aton('198.18.0.1') + struct.pack('!H', 53) + nonce, relay)
+            udp.sendto(b'\x00\x00\x00\x01' + socket.inet_aton(env_value('VPN_TEST_ROUTE_ADDRESS')) + struct.pack('!H', env_port('VPN_DNS_PORT')) + nonce, relay)
             result, _ = udp.recvfrom(2048)
             if not result.endswith(b'|' + nonce):
                 raise RuntimeError('UDP echo payload corrupted')
@@ -79,8 +80,8 @@ def main():
                     payload, sock = self.request
                     sock.sendto(identity.encode() + b'|' + payload, self.client_address)
 
-            http_server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), HTTP)
-            udp = socketserver.ThreadingUDPServer(('127.0.0.1', http_server.server_port), UDP)
+            http_server = http.server.ThreadingHTTPServer((env_value('VPN_LOOPBACK_IP'), 0), HTTP)
+            udp = socketserver.ThreadingUDPServer((env_value('VPN_LOOPBACK_IP'), http_server.server_port), UDP)
             for server in [http_server, udp]:
                 server.daemon_threads = True
                 threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -93,25 +94,25 @@ def main():
             for name in ['a', 'b', 'c']:
                 port, target = free_port(), backend(name)
                 config = {'log': {'loglevel': 'error'}, 'inbounds': [
-                    {'listen': '127.0.0.1', 'port': port, 'protocol': 'vless',
+                    {'listen': env_value('VPN_LOOPBACK_IP'), 'port': port, 'protocol': 'vless',
                      'settings': {'clients': [{'id': uid}], 'decryption': 'none'}}],
                     'outbounds': [{'protocol': 'freedom', 'settings': {
-                        'redirect': '127.0.0.1:' + str(target),
+                        'redirect': env_expand('${VPN_LOOPBACK_IP}:') + str(target),
                         # New cores block private targets on VLESS exits by
                         # default. Only these disposable fixtures allow their
                         # own loopback echo backend; production is unchanged.
-                        'finalRules': [{'action': 'allow', 'ip': ['127.0.0.1/32']}]}}]}
+                        'finalRules': [{'action': 'allow', 'ip': [env_expand('${VPN_LOOPBACK_IP}/32')]}]}}]}
                 exit_configs[name] = config
                 exits[name] = start(name, config)
                 outbounds.append({'tag': 'pool-test-' + name, 'protocol': 'vless',
-                                  'settings': {'address': '127.0.0.1', 'port': port, 'id': uid, 'encryption': 'none'}})
+                                  'settings': {'address': env_value('VPN_LOOPBACK_IP'), 'port': port, 'id': uid, 'encryption': 'none'}})
             bridges, rules, balancers = build_priority_chain([o['tag'] for o in outbounds])
             socks_port, api_port = free_port(), free_port()
             pool = {'log': {'loglevel': 'error'}, 'api': {'tag': 'api', 'services': ['RoutingService']},
-                    'inbounds': [{'tag': 'socks', 'listen': '127.0.0.1', 'port': socks_port, 'protocol': 'socks',
+                    'inbounds': [{'tag': 'socks', 'listen': env_value('VPN_LOOPBACK_IP'), 'port': socks_port, 'protocol': 'socks',
                                   'settings': {'auth': 'noauth', 'udp': True}},
-                                 {'tag': 'api', 'listen': '127.0.0.1', 'port': api_port, 'protocol': 'tunnel',
-                                  'settings': {'address': '127.0.0.1'}}],
+                                 {'tag': 'api', 'listen': env_value('VPN_LOOPBACK_IP'), 'port': api_port, 'protocol': 'tunnel',
+                                  'settings': {'address': env_value('VPN_LOOPBACK_IP')}}],
                     'outbounds': [{'tag': 'blocked', 'protocol': 'blackhole'}] + outbounds + bridges,
                     'routing': {'rules': [{'type': 'field', 'inboundTag': ['api'], 'outboundTag': 'api'},
                                           {'type': 'field', 'inboundTag': ['socks'], 'balancerTag': 'vpn-pool'}] + rules,
@@ -122,7 +123,7 @@ def main():
 
             def request():
                 result = subprocess.run(['curl', '--fail', '--silent', '--max-time', '3', '--proxy',
-                                         'socks5h://127.0.0.1:' + str(socks_port), 'http://fixture.invalid/identity'],
+                                         env_expand('socks5h://${VPN_LOOPBACK_IP}:') + str(socks_port), 'http://fixture.invalid/identity'],
                                         capture_output=True)
                 last_request.update(code=result.returncode,stdout=result.stdout.decode().strip(),stderr=result.stderr.decode().strip())
                 return result.stdout.decode().strip() if result.returncode == 0 else None

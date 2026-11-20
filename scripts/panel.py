@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Loopback-only panel API client, run as root on the entry server."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import atexit
 import hashlib
 import json
@@ -28,7 +29,7 @@ class Panel:
             atexit.register(self.close)
         # Only the local loopback endpoint is used. SSH protects remote access.
         self.context=ssl._create_unverified_context()
-        self.base='https://127.0.0.1:'+self.settings.get('webPort','2053')+'/'+self.settings.get('webBasePath','/').strip('/')+'/panel/api/'
+        self.base=env_expand('https://${VPN_LOOPBACK_IP}:')+self.settings.get('webPort',env_value('VPN_XUI_PANEL_PORT'))+'/'+self.settings.get('webBasePath','/').strip('/')+'/panel/api/'
         self.base=self.base.replace('//panel','/panel')
 
     def close(self):

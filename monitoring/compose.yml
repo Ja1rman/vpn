@@ -7,11 +7,11 @@ services:
     user: '65534:65534'
     command:
       - --config.file=/etc/vpn-monitoring/prometheus/prometheus.yml
-      - --web.listen-address=127.0.0.1:9090
+      - --web.listen-address=${VPN_LOOPBACK_IP}:${VPN_PROMETHEUS_PORT}
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=15d
       - --storage.tsdb.retention.size=1GB
-      - --web.external-url=http://212.22.70.156/prometheus/
+      - --web.external-url=http://${VPN_ENTRY_ADDRESS}:${VPN_MONITORING_HTTP_PORT}/prometheus/
       - --web.route-prefix=/
     volumes:
       - /etc/vpn-monitoring:/etc/vpn-monitoring:ro
@@ -29,9 +29,9 @@ services:
     command:
       - --config.file=/etc/vpn-monitoring/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
-      - --web.listen-address=127.0.0.1:9093
+      - --web.listen-address=${VPN_LOOPBACK_IP}:${VPN_ALERTMANAGER_PORT}
       - --cluster.listen-address=
-      - --web.external-url=http://212.22.70.156/alerts/
+      - --web.external-url=http://${VPN_ENTRY_ADDRESS}:${VPN_MONITORING_HTTP_PORT}/alerts/
       - --web.route-prefix=/
     volumes:
       - /etc/vpn-monitoring:/etc/vpn-monitoring:ro
@@ -48,7 +48,7 @@ services:
     user: '65534:65534'
     command:
       - --config.file=/etc/vpn-monitoring/blackbox.yml
-      - --web.listen-address=127.0.0.1:9115
+      - --web.listen-address=${VPN_LOOPBACK_IP}:${VPN_BLACKBOX_PORT}
     volumes:
       - /etc/vpn-monitoring:/etc/vpn-monitoring:ro
     mem_limit: 96m
@@ -62,10 +62,10 @@ services:
     network_mode: host
     restart: unless-stopped
     environment:
-      GF_SERVER_HTTP_ADDR: 127.0.0.1
-      GF_SERVER_HTTP_PORT: '3000'
+      GF_SERVER_HTTP_ADDR: ${VPN_LOOPBACK_IP}
+      GF_SERVER_HTTP_PORT: '${VPN_GRAFANA_PORT}'
       GF_PATHS_PROVISIONING: /etc/vpn-monitoring/grafana/provisioning
-      GF_SERVER_ROOT_URL: http://212.22.70.156/grafana/
+      GF_SERVER_ROOT_URL: http://${VPN_ENTRY_ADDRESS}:${VPN_MONITORING_HTTP_PORT}/grafana/
       GF_SERVER_SERVE_FROM_SUB_PATH: 'true'
       GF_SECURITY_ADMIN_USER__FILE: /etc/vpn-monitoring/grafana/admin-user
       GF_SECURITY_ADMIN_PASSWORD__FILE: /etc/vpn-monitoring/grafana/admin-password

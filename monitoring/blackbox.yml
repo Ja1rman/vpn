@@ -5,7 +5,7 @@ modules:
     http:
       method: GET
       valid_status_codes: [204]
-      proxy_url: socks5://127.0.0.1:11090
+      proxy_url: socks5://${VPN_LOOPBACK_IP}:${VPN_BALANCER_SOCKS_PORT}
       preferred_ip_protocol: ip4
   http_vpn_failover:
     prober: http
@@ -13,7 +13,7 @@ modules:
     http:
       method: GET
       valid_status_codes: [204]
-      proxy_url: socks5://127.0.0.1:11092
+      proxy_url: socks5://${VPN_LOOPBACK_IP}:${VPN_FAILOVER_SOCKS_PORT}
       preferred_ip_protocol: ip4
   tcp_connect:
     prober: tcp

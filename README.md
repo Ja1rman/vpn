@@ -4,17 +4,23 @@
 
 Репозиторий: [Ja1rman/vpn](https://github.com/Ja1rman/vpn). Развёртывание подготовлено через GitHub Actions и Environment `production`; секреты передаются через переменные окружения из GitHub Secrets. Оба workflow запускаются только вручную, deploy дополнительно выключен `VPN_DEPLOY_ENABLED=false`. CI пока не запускался и не тестировался по просьбе владельца. [Настройка Secrets, запуск и компоненты deploy](docs/ci.md).
 
+## Сетевые параметры из окружения
+
+Адреса и порты в публичных файлах обозначены `${VPN_*}`. Реальные значения храните в игнорируемом `.local/network-env.json` или передавайте через `VPN_ENDPOINTS_JSON`; отдельные переменные окружения имеют приоритет. Имена параметров перечислены в `.env.example`, значения заполняются в защищённом окружении. Для CLI-примеров с `${VPN_*}` предварительно экспортируйте соответствующие переменные в своей оболочке.
+
+Общий загрузчик `scripts/vpn_env.py` подставляет параметры в JSON и текстовые шаблоны. `render.py` сохраняет готовые конфигурации в `.local/rendered/`. Для восстановления проекта сохраните закрытую конфигурацию окружения вместе с остальными private-файлами. Правило для всех последующих изменений записано в [AGENTS.md](AGENTS.md).
+
 ## Текущая схема
 
 ```mermaid
 flowchart LR
-    Client["VLESS / HTTP / SOCKS / WireGuard"] --> Entry["212.22.70.156 · x-ui / Xray"]
-    Client -->|VLESS для NekoBox/Hiddify| Android["sing-box :33173"]
-    Android -->|тот же UUID, loopback VLESS :46738| Entry
-    Entry --> Pool["127.0.0.1:11090 · vpn-balancer"]
-    Pool -->|основной| VLESS["breeze-reef · VLESS/REALITY/XHTTP :443"]
-    Pool -->|первый резерв| TCP["breeze-reef · VLESS/REALITY TCP :8443"]
-    Pool -->|резерв NL| Hysteria["breeze-reef · Hysteria 2 UDP :55625"]
+    Client["VLESS / HTTP / SOCKS / WireGuard"] --> Entry["Входной сервер · x-ui / Xray"]
+    Client -->|VLESS для NekoBox/Hiddify| Android["Совместимый REALITY · sing-box"]
+    Android -->|тот же UUID, loopback VLESS| Entry
+    Entry --> Pool["Локальный SOCKS · vpn-balancer"]
+    Pool -->|основной| VLESS["breeze-reef · VLESS/REALITY/XHTTP"]
+    Pool -->|первый резерв| TCP["breeze-reef · VLESS/REALITY TCP"]
+    Pool -->|резерв NL| Hysteria["breeze-reef · Hysteria 2 UDP"]
     VLESS --> Internet
     TCP --> Internet
     Hysteria --> Internet
@@ -24,28 +30,28 @@ flowchart LR
 
 | Роль | Хост | SSH | Развёрнуто |
 |---|---|---|---|
-| Вход, балансировщик, мониторинг | `212.22.70.156` | `marat` + sudo | существующий x-ui, отдельный Xray, Docker Compose |
-| Выход в Нидерландах | `144.31.34.165` (`breeze-reef`) | `root` | существующий x-ui, Node Exporter |
+| Вход, балансировщик, мониторинг | `${VPN_ENTRY_ADDRESS}` | `marat` + sudo | существующий x-ui, отдельный Xray, Docker Compose |
+| Выход в Нидерландах | `${VPN_NL_ADDRESS}` (`breeze-reef`) | `root` | существующий x-ui, Node Exporter |
 
 `back` / `lonelycraft.ru` не относится к этой инфраструктуре и не изменялся.
 
 **Доступны две подписки.** Обычная подписка использует три транспорта NL-сервера, затем независимые резервы `ihor` и `srv-41969`. Отдельная подписка **VPN Auto** выдаёт один профиль с очередью `ihor → breeze-reef → srv-41969` и прямым выходом для российских доменов. [Как выдать подписку новому пользователю](docs/create-user-subscriptions.md) · [Ссылка, порядок и откат](docs/two-subscriptions.md) · [Как добавить сервер с ноутбука](docs/add-server-from-laptop.md).
 
-Для Telegram доступен отдельный **MTProto-прокси** на `212.22.70.156:8443` через тот же резервируемый пул VPN Auto. Готовая ссылка подключения хранится в закрытом `.local/mtproto/access.md`. [Подключение и управление MTProto](docs/telegram-mtproto.md).
+Для Telegram доступен отдельный **MTProto-прокси** на `${VPN_ENTRY_ADDRESS}:${VPN_MTPROTO_PUBLIC_PORT}` через тот же резервируемый пул VPN Auto. Готовая ссылка подключения хранится в закрытом `.local/mtproto/access.md`. Дополнительно развёрнут SOCKS5 с отдельными реквизитами в `.local/telegram-socks/access.md`; внешний обмен Telegram через него ещё не подтверждён. [Подключение, проверки и управление прокси](docs/telegram-mtproto.md).
 
-Входной `212.22.70.156` также остаётся единственной точкой входа. Чтобы пережить его полный отказ, нужны второй вход и поддерживающий автоматическое переключение клиентский профиль. Один WireGuard Endpoint сам по себе не переключается между серверами. Уже оборванные TCP-соединения при отказе выходного узла приложения устанавливают заново; время обнаружения зависит от проверки и сетевого тайм-аута, обычно десятки секунд.
+Входной `${VPN_ENTRY_ADDRESS}` также остаётся единственной точкой входа. Чтобы пережить его полный отказ, нужны второй вход и поддерживающий автоматическое переключение клиентский профиль. Один WireGuard Endpoint сам по себе не переключается между серверами. Уже оборванные TCP-соединения при отказе выходного узла приложения устанавливают заново; время обнаружения зависит от проверки и сетевого тайм-аута, обычно десятки секунд.
 
 ## Внешний доступ и реквизиты
 
-- [Grafana](https://212.22.70.156/grafana/) — форма входа, дашборд **VPN → VPN — серверы и сетевой трафик**.
-- [Alertmanager](http://212.22.70.156/alerts/) — HTTP Basic Auth.
-- [Prometheus](http://212.22.70.156/prometheus/) — HTTP Basic Auth.
+- Grafana (`${VPN_GRAFANA_URL}`) — форма входа, дашборд **VPN → VPN — серверы и сетевой трафик**.
+- Alertmanager (`${VPN_ALERTMANAGER_URL}`) — HTTP Basic Auth.
+- Prometheus (`${VPN_PROMETHEUS_URL}`) — HTTP Basic Auth.
 
 Логин — **`admin`**. Пароль хранится в **`.local/access.md`** и `.local/access.json`. Grafana и HTTP Basic Auth используют одинаковые реквизиты. Для входа в Grafana используйте HTTPS. Старый HTTP-вход и HTTP для Alertmanager и Prometheus сохраняются. В недоверенной сети для этих двух служб можно использовать SSH-туннель. [Настройка HTTPS для Grafana](docs/grafana-https.md).
 
 Чтобы сменить пароль или логин, измените поле в `.local/access.json`, затем выполните `render.py` и `refresh-grafana`. Текущий логин определяется по установленному файлу и меняется через API. Сохраняйте длину пароля не менее 24 случайных символов.
 
-Порты `3000`, `9090`, `9093`, `9115`, `11090`, `11091` слушают только loopback. Мониторинг доступен через nginx на TCP `80`, Grafana также доступна через отдельный HTTPS-вход на TCP `443`. Node Exporter на выходном VPS использует TCP `19100` с обязательным клиентским TLS-сертификатом; на входном сервере этот порт доступен только через loopback.
+Порты `${VPN_GRAFANA_PORT}`, `${VPN_PROMETHEUS_PORT}`, `${VPN_ALERTMANAGER_PORT}`, `${VPN_BLACKBOX_PORT}`, `${VPN_BALANCER_SOCKS_PORT}`, `${VPN_BALANCER_API_PORT}` слушают только loopback. Мониторинг доступен через nginx на TCP `${VPN_MONITORING_HTTP_PORT}`, Grafana также доступна через отдельный HTTPS-вход на TCP `${VPN_MONITORING_HTTPS_PORT}`. Node Exporter на выходном VPS использует TCP `${VPN_NODE_EXPORTER_PORT}` с обязательным клиентским TLS-сертификатом; на входном сервере этот порт доступен только через loopback.
 
 SSH-туннель при необходимости:
 
@@ -55,28 +61,28 @@ python3 scripts/vpnctl.py tunnel
 
 ## Что изменено в VPN
 
-Основной Xray не перезапускался. Балансировщик `vpn-balancer.service` — отдельная копия проверенного Xray `26.10.10`. Он принимает SOCKS5 TCP/UDP на `127.0.0.1:11090` и отправляет трафик через зашифрованные выходы.
+Основной Xray не перезапускался. Балансировщик `vpn-balancer.service` — отдельная копия проверенного Xray `26.10.10`. Он принимает SOCKS5 TCP/UDP на `${VPN_LOOPBACK_IP}:${VPN_BALANCER_SOCKS_PORT}` и отправляет трафик через зашифрованные выходы.
 
 Outbound `vpn-egress-pool` направляет все десять действующих клиентских входов в пул. Первые шесть правил переведены через API x-ui; ещё четыре прежних прямых входа — через RoutingService Xray без перезапуска:
 
 | Inbound tag | Назначение |
 |---|---|
-| `in-33172-tcp` | VLESS / REALITY |
-| `in-47070-udp` | WireGuard |
-| `in-58663-tcp` | HTTP proxy |
-| `in-53715-tcpudp` | Shadowsocks |
-| `in-48360-udp` | локальный SOCKS-мост |
-| `in-46738-tcp` | VLESS |
-| `in-26279-tcp` | HTTP proxy, прежний порт `26279` |
-| `in-48607-tcp` | HTTP proxy, прежний порт `48607` |
-| `in-13298-tcp` | HTTP/SOCKS, прежний порт `13298` |
-| `in-36307-udp` | WireGuard, прежний порт `36307/UDP` |
+| `in-${VPN_VLESS_NATIVE_PORT}-tcp` | VLESS / REALITY |
+| `in-${VPN_WIREGUARD_PRIMARY_PORT}-udp` | WireGuard |
+| `in-${VPN_HTTP_PRIMARY_PORT}-tcp` | HTTP proxy |
+| `in-${VPN_SS_PORT}-tcpudp` | Shadowsocks |
+| `in-${VPN_LOCAL_SOCKS_BRIDGE_PORT}-udp` | локальный SOCKS-мост |
+| `in-${VPN_VLESS_AUTH_PORT}-tcp` | VLESS |
+| `in-${VPN_HTTP_SECONDARY_PORT}-tcp` | HTTP proxy, прежний порт `${VPN_HTTP_SECONDARY_PORT}` |
+| `in-${VPN_HTTP_LEGACY_PORT}-tcp` | HTTP proxy, прежний порт `${VPN_HTTP_LEGACY_PORT}` |
+| `in-${VPN_HTTP_SOCKS_PORT}-tcp` | HTTP/SOCKS, прежний порт `${VPN_HTTP_SOCKS_PORT}` |
+| `in-${VPN_WIREGUARD_LEGACY_PORT}-udp` | WireGuard, прежний порт `${VPN_WIREGUARD_LEGACY_PORT}/UDP` |
 
-Адрес `212.22.70.156`, порты, пароли, UUID и WireGuard-ключи/peers сохранены. Клиентские профили менять не нужно. Общие правила API, блокировки private-сетей и BitTorrent сохранены перед правилами входов. Исходные NL-outbounds и outbound `direct` оставлены в x-ui для отката; для перечисленных входов новые соединения выбирают пул. У SOCKS `13298` UDP был выключен и остался выключенным.
+Адрес `${VPN_ENTRY_ADDRESS}`, порты, пароли, UUID и WireGuard-ключи/peers сохранены. Клиентские профили менять не нужно. Общие правила API, блокировки private-сетей и BitTorrent сохранены перед правилами входов. Исходные NL-outbounds и outbound `direct` оставлены в x-ui для отката; для перечисленных входов новые соединения выбирают пул. У SOCKS `${VPN_HTTP_SOCKS_PORT}` UDP был выключен и остался выключенным.
 
-Соединения, открытые до переключения, продолжают работать по прежнему пути до завершения; новые соединения сразу используют пул. Принудительный разрыв старых сессий не выполняется. Профиль с прямым адресом `144.31.34.165` по-прежнему подключается непосредственно к NL и не проходит через входной сервер.
+Соединения, открытые до переключения, продолжают работать по прежнему пути до завершения; новые соединения сразу используют пул. Принудительный разрыв старых сессий не выполняется. Профиль с прямым адресом `${VPN_NL_ADDRESS}` по-прежнему подключается непосредственно к NL и не проходит через входной сервер.
 
-Режим — **`priority`: основной и резервные выходы**. Порядок обычного пула задаётся списком `nodes`, индексами `outbounds` и полем `balancer.priority_order`. После NL VLESS/XHTTP443, VLESS/TCP8443 и Hysteria идут независимые резервы `ihor` и `srv-41969` из `balancer.reserve_outbounds`. Их закрытые конфигурации хранятся в `.local/outbounds/` и GitHub Secret `VPN_OUTBOUNDS_JSON`. При недоступности NL обычные профили автоматически используют следующий исправный сервер.
+Режим — **`priority`: основной и резервные выходы**. Порядок обычного пула задаётся списком `nodes`, индексами `outbounds` и полем `balancer.priority_order`. После NL VLESS/XHTTP ${VPN_EXIT_TLS_PORT}, VLESS/TCP ${VPN_EXIT_RESERVE_PORT} и Hysteria идут независимые резервы `ihor` и `srv-41969` из `balancer.reserve_outbounds`. Их закрытые конфигурации хранятся в `.local/outbounds/` и GitHub Secret `VPN_OUTBOUNDS_JSON`. При недоступности NL обычные профили автоматически используют следующий исправный сервер.
 
 Observatory каждые `10s` параллельно проверяет доступность выходов. Выбирается первый доступный по порядку; задержка переключения включает проверку и сетевой тайм-аут. При восстановлении более приоритетного выхода **новые** соединения возвращаются на него. Уже открытые соединения продолжаются до завершения, пока их сервер доступен; оборванные при реальном отказе сессии переподключает приложение. Смены выходного IP при настоящем отказе/восстановлении избежать нельзя; постоянной ротации IP между здоровыми хостами нет.
 
@@ -84,20 +90,20 @@ Observatory каждые `10s` параллельно проверяет дос�
 
 ## NekoBox, Hiddify и ChatGPT
 
-Обе подписки автоматически выдают VLESS-профили для Xray. Обычная подписка на `2096` использует TLS вместо незашифрованных VLESS-ссылок. Соответствие входов задаётся штатными `hosts` в x-ui и применяется к существующим и новым клиентам при каждом запросе подписки.
+Обе подписки автоматически выдают VLESS-профили для Xray. Обычная подписка на `${VPN_SUBSCRIPTION_PORT}` использует TLS вместо незашифрованных VLESS-ссылок. Соответствие входов задаётся штатными `hosts` в x-ui и применяется к существующим и новым клиентам при каждом запросе подписки.
 
 | Вход авторизации x-ui | TLS-порт в обычной подписке | Маршрут |
 |---|---|---|
-| `46738` | `33176` | Обычный пул с независимыми резервами |
-| `22799` | `33177` | `ihor` |
-| `16715` | `33178` | Переход через `ihor` в NL |
-| `18398` | `33179` | `srv-41969` |
+| `${VPN_VLESS_AUTH_PORT}` | `${VPN_STANDARD_TLS_PORT}` | Обычный пул с независимыми резервами |
+| `${VPN_PRIMARY_VLESS_PORT}` | `${VPN_PRIMARY_TLS_PORT}` | `ihor` |
+| `${VPN_NL_RELAY_VLESS_PORT}` | `${VPN_NL_RELAY_TLS_PORT}` | Переход через `ihor` в NL |
+| `${VPN_THIRD_VLESS_PORT}` | `${VPN_THIRD_TLS_PORT}` | `srv-41969` |
 
-Профиль VPN Auto в подписке на `2097` использует прежний REALITY `33174` или TLS `33175`. Новые клиенты с привязкой к `46738` получают его автоматически. В приложении достаточно обновить существующие подписки. Восстановление этой настройки с ноутбука выполняется командой `python3 scripts/vpnctl.py deploy-xray-subscriptions` после установки основных VPN-служб и HTTPS-подписок.
+Профиль VPN Auto в подписке на `${VPN_AUTO_SUBSCRIPTION_PORT}` предпочитает TLS `${VPN_AUTO_TLS_PUBLIC_PORT}` с явными SNI публичного IP и fingerprint Chrome; при отсутствии основного VLESS используется прежний REALITY `${VPN_AUTO_REALITY_PORT}`. Новые клиенты с привязкой к `${VPN_VLESS_AUTH_PORT}` получают профиль автоматически. В NekoBox или Hiddify обновите подписку, выберите **VPN Auto** и переподключитесь. Прежний TLS-вход `${VPN_AUTO_TLS_PORT}` сохранён. Восстановление этой настройки с ноутбука выполняется командой `python3 scripts/vpnctl.py deploy-xray-subscriptions` после установки основных VPN-служб и HTTPS-подписок.
 
-С 20 октября для NekoBox/Hiddify добавлен профиль **`mc-ubuntu-breeze-reef-android-…`**, TCP `33173`. Обновите существующую подписку и выберите этот профиль. Он исправляет несовместимость REALITY текущего Xray с sing-box; старые профили и Shadowsocks сохранены.
+С 20 октября для NekoBox/Hiddify добавлен профиль **`mc-ubuntu-breeze-reef-android-…`**, TCP `${VPN_COMPAT_VLESS_PORT}`. Обновите существующую подписку и выберите этот профиль. Он исправляет несовместимость REALITY текущего Xray с sing-box; старые профили и Shadowsocks сохранены.
 
-Отдельная служба `vpn-compatible-vless` принимает REALITY и передаёт тот же UUID в основной VLESS `127.0.0.1:46738`. Авторизация и учёт трафика остаются в x-ui. Служба не заменяет основной Xray. Профиль добавлен через `client_external_links`; при публикации не изменяются inbounds или записи клиентов.
+Отдельная служба `vpn-compatible-vless` принимает REALITY и передаёт тот же UUID в основной VLESS `${VPN_LOOPBACK_IP}:${VPN_VLESS_AUTH_PORT}`. Авторизация и учёт трафика остаются в x-ui. Служба не заменяет основной Xray. Профиль добавлен через `client_external_links`; при публикации не изменяются inbounds или записи клиентов.
 
 В тесте 20 октября основной транспорт дал 65–69 Мбит/с, отдельный TCP — 57–59 Мбит/с, Hysteria — менее 1 Мбит/с. Поэтому TCP поставлен перед Hysteria только резервом. Это небольшие серверные тесты, скорость телефона зависит также от его сети.
 
@@ -166,11 +172,11 @@ python3 scripts/vpnctl.py deploy-node breeze-reef
 
 ### Новый чистый VPS
 
-Пример с документационным IP: замените его на реальный адрес. На VPS должен быть свободен порт TCP `443`, а firewall провайдера должен пропускать TCP `443` и TCP `19100` от сервера мониторинга.
+Экспортируйте адрес нового VPS в `VPN_NEW_EXIT_ADDRESS`. На VPS должен быть свободен порт TCP `${VPN_EXIT_TLS_PORT}`, а firewall провайдера должен пропускать TCP `${VPN_EXIT_TLS_PORT}` и TCP `${VPN_NODE_EXPORTER_PORT}` от сервера мониторинга.
 
 ```bash
 python3 scripts/add_host.py \
-  --name exit-de-1 --address 203.0.113.10 --user root \
+  --name exit-de-1 --address "${VPN_NEW_EXIT_ADDRESS}" --user root \
   --network-budget-mbps 1000 --provision
 python3 scripts/vpnctl.py deploy-monitoring
 ```
@@ -183,7 +189,7 @@ python3 scripts/vpnctl.py deploy-monitoring
 
 ```bash
 python3 scripts/add_host.py \
-  --name exit-de-1 --address 203.0.113.10 --user root \
+  --name exit-de-1 --address "${VPN_NEW_EXIT_ADDRESS}" --user root \
   --network-budget-mbps 1000 --outbound .local/new-exit.json
 python3 scripts/vpnctl.py deploy-monitoring
 ```
@@ -200,12 +206,12 @@ python3 scripts/vpnctl.py deploy-monitoring
 
 | Дашборд | Содержимое |
 |---|---|
-| [Обзор](https://212.22.70.156/grafana/d/vpn-infrastructure/) | Доступность, основные ресурсы, трафик и активные алерты |
-| [CPU](https://212.22.70.156/grafana/d/vpn-cpu/) | Загрузка по ядрам и режимам, iowait/steal, load, процессы, переключения контекста и CPU pressure |
-| [RAM и swap](https://212.22.70.156/grafana/d/vpn-memory/) | MemAvailable, cache/buffers, swap, page faults и memory pressure |
-| [Диски](https://212.22.70.156/grafana/d/vpn-disks/) | Место и inode по файловым системам, чтение/запись, IOPS, задержки, занятость диска и очередь |
-| [Сеть и TCP](https://212.22.70.156/grafana/d/vpn-network/) | RX/TX, объём за период, пакеты, ошибки, потери, бюджет канала и TCP retransmits |
-| [Использование VPN](https://212.22.70.156/grafana/d/vpn-usage/) | Входящий и исходящий трафик за период, активные подписки и устройства с индивидуальными профилями. [Как связать устройства с подписками](docs/vpn-usage.md) |
+| Обзор (`${VPN_GRAFANA_URL}d/vpn-infrastructure/`) | Доступность, основные ресурсы, трафик и активные алерты |
+| CPU (`${VPN_GRAFANA_URL}d/vpn-cpu/`) | Загрузка по ядрам и режимам, iowait/steal, load, процессы, переключения контекста и CPU pressure |
+| RAM и swap (`${VPN_GRAFANA_URL}d/vpn-memory/`) | MemAvailable, cache/buffers, swap, page faults и memory pressure |
+| Диски (`${VPN_GRAFANA_URL}d/vpn-disks/`) | Место и inode по файловым системам, чтение/запись, IOPS, задержки, занятость диска и очередь |
+| Сеть и TCP (`${VPN_GRAFANA_URL}d/vpn-network/`) | RX/TX, объём за период, пакеты, ошибки, потери, бюджет канала и TCP retransmits |
+| Использование VPN (`${VPN_GRAFANA_URL}d/vpn-usage/`) | Входящий и исходящий трафик за период, активные подписки и устройства с индивидуальными профилями. [Как связать устройства с подписками](docs/vpn-usage.md) |
 
 Генератор подробных дашбордов — `scripts/build_dashboards.py`, результат хранится в `monitoring/grafana/dashboards/*.json`. Обновление без перезапуска Grafana, Prometheus и VPN:
 
@@ -235,7 +241,7 @@ python3 scripts/vpnctl.py refresh-grafana
 
 Prometheus хранит до 15 дней и до 1 ГБ TSDB; с учётом WAL фактический каталог может быть больше. Контейнеры имеют лимиты памяти/CPU. После установки диск входного сервера был заполнен на 92%. Разовая очистка старых journal-файлов и неиспользуемого build cache снизила заполнение до 84% и освободила около 9,63 ГиБ; данные приложений и Docker-образы сохранены. Подробности: [обследование и очистка диска](docs/disk-maintenance.md).
 
-Prometheus отправляет алерты в Alertmanager; включена почтовая доставка и уведомления о восстановлении двум получателям через существующий Mailu SMTP по TLS465. Адреса и реквизиты хранятся в `.local/smtp.json`, итоговый YAML — в `.local/alertmanager.yml` и Secret `production/VPN_ALERTMANAGER_CONFIG`. `render.py` автоматически применяет private override; публичный шаблон остаётся web-only. Настройки mail-хоста не менялись. [Изменить почту, применить без перезапуска и выполнить откат](docs/email.md).
+Prometheus отправляет алерты в Alertmanager; включена почтовая доставка и уведомления о восстановлении двум получателям через существующий Mailu SMTP по TLS ${VPN_SMTP_PORT}. Адреса и реквизиты хранятся в `.local/smtp.json`, итоговый YAML — в `.local/alertmanager.yml` и Secret `production/VPN_ALERTMANAGER_CONFIG`. `render.py` автоматически применяет private override; публичный шаблон остаётся web-only. Настройки mail-хоста не менялись. [Изменить почту, применить без перезапуска и выполнить откат](docs/email.md).
 
 Если выключен сам сервер мониторинга, он не сможет показать новый алерт о собственном отказе. Для этого нужен независимый внешний наблюдатель/второй Prometheus. mTLS-сертификаты exporter действуют 397 дней. Для обновления сохраните CA, удалите только соответствующие leaf `cert.pem` в `.local/pki/ИМЯ/` и/или `.local/pki/client/`, запустите `certificates.py`, затем `deploy-node` и `deploy-monitoring`. Закрытый CA-ключ не пересоздавайте при обычной ротации.
 
@@ -260,7 +266,7 @@ sudo python3 /opt/vpn-infra/staging/entry/activation/activate_balancer.py \
 
 Это возвращает сохранённый шаблон x-ui через API; базу пользователей не подменяет. После последующих ручных изменений шаблона сначала сохраните свежую копию, чтобы не вернуть устаревшие правила. `activate-balancer` умеет повторно включить пул.
 
-Последующий перевод HTTP `26279/48607`, HTTP/SOCKS `13298` и WireGuard `36307` сохранён в `/var/backups/vpn-infra/routes-20261016T125200Z`. В каталоге лежат шаблон/runtime до и после, отчёт и отметка `committed`. Независимый watchdog возвращает только маршрутизацию, если проверка не завершена за 180 секунд. Ручной откат именно этого перевода без перезапуска:
+Последующий перевод HTTP `${VPN_HTTP_SECONDARY_PORT}/${VPN_HTTP_LEGACY_PORT}`, HTTP/SOCKS `${VPN_HTTP_SOCKS_PORT}` и WireGuard `${VPN_WIREGUARD_LEGACY_PORT}` сохранён в `/var/backups/vpn-infra/routes-20261016T125200Z`. В каталоге лежат шаблон/runtime до и после, отчёт и отметка `committed`. Независимый watchdog возвращает только маршрутизацию, если проверка не завершена за 180 секунд. Ручной откат именно этого перевода без перезапуска:
 
 ```bash
 sudo python3 /opt/vpn-infra/staging/entry/route-migration/migrate_direct_inbounds.py \

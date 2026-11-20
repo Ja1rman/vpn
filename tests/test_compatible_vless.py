@@ -13,6 +13,9 @@ import urllib.parse
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from test_environment import configure
+configure()
+from vpn_env import env, port as env_port, expand
 import compatible_profiles
 from compatible_vless import build_config
 
@@ -24,7 +27,7 @@ def encoded_dummy_key():
 def inbound_pair(user_ids):
     clients = [{"id": uid, "flow": ""} for uid in user_ids]
     source = {
-        "protocol": "vless", "port": 33172,
+        "protocol": "vless", "port": env_port('VPN_VLESS_NATIVE_PORT'),
         "settings": {"clients": clients},
         "streamSettings": {
             "network": "tcp", "security": "reality",
@@ -33,7 +36,7 @@ def inbound_pair(user_ids):
         },
     }
     forward = {
-        "protocol": "vless", "port": 46738, "listen": "0.0.0.0",
+        "protocol": "vless", "port": env_port('VPN_VLESS_AUTH_PORT'), "listen": env('VPN_BIND_IP'),
         "settings": {"clients": clients},
         "streamSettings": {"network": "tcp", "security": "none"},
     }
@@ -63,8 +66,8 @@ class CompatibleRoutingSafety(unittest.TestCase):
         for user in users:
             outbound = outbounds[routes[(user["name"],)]]
             self.assertEqual(outbound["type"], "vless")
-            self.assertEqual(outbound["server"], "127.0.0.1")
-            self.assertEqual(outbound["server_port"], 46738)
+            self.assertEqual(outbound["server"], env('VPN_LOOPBACK_IP'))
+            self.assertEqual(outbound["server_port"], env_port('VPN_VLESS_AUTH_PORT'))
             self.assertEqual(outbound["uuid"], user["uuid"])
             self.assertEqual(outbound["packet_encoding"], "xudp")
         self.assertEqual(config["route"]["rules"][-1], {"action": "reject"})
@@ -124,7 +127,7 @@ class CompatibleSubscriptionSafety(unittest.TestCase):
 
     def publish(self):
         return compatible_profiles.publish_profiles(
-            self.database, self.config, "203.0.113.1", self.root / "backups", check_ready=False,
+            self.database, self.config, env('VPN_TEST_ADDRESS_A'), self.root / "backups", check_ready=False,
         )
 
     def test_publication_preserves_previous_links_and_is_idempotent(self):
@@ -137,7 +140,7 @@ class CompatibleSubscriptionSafety(unittest.TestCase):
         for row in after[2:]:
             self.assertEqual(row["kind"], "link")
             uri = urllib.parse.urlsplit(row["value"])
-            self.assertEqual(uri.port, 33173)
+            self.assertEqual(uri.port, env_port('VPN_COMPAT_VLESS_PORT'))
             self.assertEqual(uri.username, self.user_ids[row["client_id"] - 1])
             self.assertEqual(urllib.parse.unquote(uri.fragment), row["remark"])
             self.assertEqual(urllib.parse.parse_qs(uri.query)["packetEncoding"], ["xudp"])

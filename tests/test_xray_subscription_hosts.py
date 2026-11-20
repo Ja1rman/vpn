@@ -9,6 +9,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from test_environment import configure
+configure()
+from vpn_env import env, port as env_port, expand
 import xray_subscription_hosts as hosts
 
 
@@ -18,9 +21,9 @@ class NativeSubscriptionHostsTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.database, self.backups = self.root / 'panel.db', self.root / 'backups'
-        self.address = ipaddress.IPv4Address('192.0.2.1')
+        self.address = ipaddress.IPv4Address(env('VPN_TEST_ADDRESS_A'))
         with closing(sqlite3.connect(self.database)) as db:
-            fields = hosts.desired_host(1, 33176, self.address)
+            fields = hosts.desired_host(1, env_port('VPN_STANDARD_TLS_PORT'), self.address)
             declarations = [key + (' INTEGER' if isinstance(value, int) else ' TEXT')
                             for key, value in fields.items()]
             db.execute('CREATE TABLE hosts(id INTEGER PRIMARY KEY AUTOINCREMENT,group_id TEXT,' +
@@ -81,7 +84,7 @@ class NativeSubscriptionHostsTest(unittest.TestCase):
 
     def test_existing_unrelated_host_is_not_changed_or_adopted(self):
         with closing(sqlite3.connect(self.database)) as db:
-            db.execute('INSERT INTO hosts(inbound_id,port,security,remark) VALUES(1,9443,?,?)',
+            db.execute(expand('INSERT INTO hosts(inbound_id,port,security,remark) VALUES(1,${VPN_TEST_UNEXPECTED_PORT},?,?)'),
                        ('tls', 'owner-defined'))
             db.commit()
         before = self.rows()

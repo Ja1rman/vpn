@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Install an independent MTProto frontend using the existing VPN Auto SOCKS pool."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import grp
 import hashlib
@@ -21,9 +22,9 @@ UNIT = NAME + '.service'
 VERSION = '2.3.0'
 ARCHIVE_NAME = 'mtg-2.3.0-linux-amd64.tar.gz'
 ARCHIVE_SHA256 = '11c038ea5eeebd5d49148048975c24f7b0c4fa4c1cf4f15a2410203e2da01812'
-ADDRESS = '212.22.70.156'
-PORT = 8443
-POOL_PORT = 11092
+ADDRESS = env_value('VPN_ENTRY_ADDRESS')
+PORT = env_port('VPN_MTPROTO_PORT')
+POOL_PORT = env_port('VPN_FAILOVER_SOCKS_PORT')
 CONFIG_DIRECTORY = Path('/etc') / NAME
 RUNTIME = Path('/opt') / NAME
 CONFIG = CONFIG_DIRECTORY / 'config.toml'
@@ -86,31 +87,7 @@ def read_binary(archive):
 
 
 def config_text(secrets):
-    return f'''debug = false
-secret = {json.dumps(secrets['secret'])}
-bind-to = "0.0.0.0:{PORT}"
-public-ipv4 = "{ADDRESS}"
-prefer-ip = "only-ipv4"
-concurrency = 128
-auto-update = false
-
-[network]
-dns = "https://1.1.1.1/dns-query"
-proxies = ["socks5://127.0.0.1:{POOL_PORT}"]
-
-[network.timeout]
-tcp = "5s"
-http = "10s"
-idle = "5m"
-handshake = "10s"
-
-[defense.anti-replay]
-enabled = true
-max-size = "1mib"
-
-[defense.blocklist]
-enabled = false
-'''
+    return env_expand(f'''debug = false\nsecret = {json.dumps(secrets['secret'])}\nbind-to = "${{VPN_BIND_IP}}:{PORT}"\npublic-ipv4 = "{ADDRESS}"\nprefer-ip = "only-ipv4"\nconcurrency = 128\nauto-update = false\n\n[network]\ndns = "https://${{VPN_DNS_ADDRESS}}/dns-query"\nproxies = ["socks5://${{VPN_LOOPBACK_IP}}:{POOL_PORT}"]\n\n[network.timeout]\ntcp = "5s"\nhttp = "10s"\nidle = "5m"\nhandshake = "10s"\n\n[defense.anti-replay]\nenabled = true\nmax-size = "1mib"\n\n[defense.blocklist]\nenabled = false\n''')
 
 
 def unit_text():
@@ -161,7 +138,7 @@ def check_account():
 
 
 def pool_available():
-    with socket.create_connection(('127.0.0.1', POOL_PORT), timeout=3) as connection:
+    with socket.create_connection((env_value('VPN_LOOPBACK_IP'), POOL_PORT), timeout=3) as connection:
         connection.sendall(b'\x05\x01\x00')
         require(connection.recv(2) == b'\x05\x00', 'The existing VPN Auto SOCKS pool did not answer')
 
@@ -169,7 +146,7 @@ def pool_available():
 def check_listener():
     for _ in range(30):
         try:
-            with socket.create_connection(('127.0.0.1', PORT), timeout=.5):
+            with socket.create_connection((env_value('VPN_LOOPBACK_IP'), PORT), timeout=.5):
                 return
         except OSError:
             time.sleep(.2)
@@ -217,7 +194,7 @@ def install(archive, secrets_file):
             'The MTProto service name is already in use')
     pool_available()
     with socket.socket() as listener:
-        listener.bind(('0.0.0.0', PORT))
+        listener.bind((env_value('VPN_BIND_IP'), PORT))
     created, account_created = [], False
     try:
         try:

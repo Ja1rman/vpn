@@ -1,11 +1,12 @@
 """Build the optional domain split for the isolated VPN Auto pool."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import copy
 import ipaddress
 
 
 POOL_TAG = 'pool-socks'
 SNIFF_TAG = 'pool-ip-sniff'
-SNIFF_PORT = 11094
+SNIFF_PORT = env_port('VPN_AUTO_SNIFF_PORT')
 HOP_TAG = 'vpn-auto-sniff-hop'
 DIRECT_TAG = 'vpn-auto-ru-direct'
 RU_RULE_TAG = 'vpn-auto-domain-ru'
@@ -44,12 +45,12 @@ def add_direct_ru(config, address):
         raise ValueError('VPN Auto RU route tags are already used')
     result = copy.deepcopy(config)
     result['inbounds'].append({
-        'tag': SNIFF_TAG, 'listen': '127.0.0.1', 'port': SNIFF_PORT, 'protocol': 'socks',
+        'tag': SNIFF_TAG, 'listen': env_value('VPN_LOOPBACK_IP'), 'port': SNIFF_PORT, 'protocol': 'socks',
         'settings': {'auth': 'noauth', 'udp': False},
         'sniffing': {'enabled': True, 'destOverride': ['http', 'tls'], 'routeOnly': True},
     })
     result['outbounds'].extend([
-        {'tag': HOP_TAG, 'protocol': 'socks', 'settings': {'address': '127.0.0.1', 'port': SNIFF_PORT}},
+        {'tag': HOP_TAG, 'protocol': 'socks', 'settings': {'address': env_value('VPN_LOOPBACK_IP'), 'port': SNIFF_PORT}},
         {'tag': DIRECT_TAG, 'protocol': 'freedom',
          'settings': {'finalRules': [{'action': 'block', 'ip': ['geoip:private', address + '/32']}]},
          'streamSettings': {'sockopt': {'domainStrategy': 'ForceIPv4'}}},
@@ -60,7 +61,7 @@ def add_direct_ru(config, address):
         # An IP-only web request gets one inspection pass. IPv6 literals
         # stay in the old pool: the direct outbound deliberately uses IPv4.
         {'type': 'field', 'ruleTag': INSPECT_RULE_TAG, 'inboundTag': [POOL_TAG],
-         'network': 'tcp', 'ip': ['0.0.0.0/0'], 'port': '80,443', 'outboundTag': HOP_TAG},
+         'network': 'tcp', 'ip': [env_expand('${VPN_BIND_IP}/0')], 'port': env_expand('${VPN_WEB_HTTP_PORT},${VPN_WEB_HTTPS_PORT}'), 'outboundTag': HOP_TAG},
         {'type': 'field', 'inboundTag': [POOL_TAG, SNIFF_TAG], 'balancerTag': 'vpn-pool'},
     ]
     return result

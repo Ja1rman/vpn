@@ -2,7 +2,7 @@
 
 Alertmanager отправляет уведомления на два настроенных адреса. Реальные адреса, SMTP-логин и пароль хранятся в private `.local/smtp.json`. Итоговый YAML хранится в `.local/alertmanager.yml` и GitHub Secret `production/VPN_ALERTMANAGER_CONFIG`.
 
-Используется существующий SMTP-аккаунт на mail-хосте из `~/.ssh/config`: TCP465 с implicit TLS и обязательной проверкой сертификата. TCP587 на этом сервере не принимает соединения. Настройки Mailu, его учётные записи и `~/.ssh/config` автоматизация не меняет.
+Используется существующий SMTP-аккаунт на mail-хосте из `~/.ssh/config`: TCP ${VPN_SMTP_PORT} с implicit TLS и обязательной проверкой сертификата. TCP ${VPN_SMTP_STARTTLS_PORT} на этом сервере не принимает соединения. Настройки Mailu, его учётные записи и `~/.ssh/config` автоматизация не меняет.
 
 ## Изменить отправителя или получателей
 
@@ -11,14 +11,14 @@ Alertmanager отправляет уведомления на два настр�
 ```json
 {
   "host": "smtp.example.com",
-  "port": 465,
+  "port": "${VPN_SMTP_PORT}",
   "username": "alerts@example.com",
   "password": "SMTP_APPLICATION_PASSWORD",
   "to": ["recipient-one@example.com", "recipient-two@example.com"]
 }
 ```
 
-Поле `from` необязательно, по умолчанию равно `username`. Для STARTTLS поддержан порт587. Вместо хранения логина/пароля в JSON можно передать `VPN_SMTP_USERNAME` и `VPN_SMTP_PASSWORD` в окружении процесса. Не сохраняйте их в публичном `.env.example` и не включайте shell trace.
+Поле `from` необязательно, по умолчанию равно `username`. Для STARTTLS поддержан порт ${VPN_SMTP_STARTTLS_PORT}. Вместо хранения логина/пароля в JSON можно передать `VPN_SMTP_USERNAME` и `VPN_SMTP_PASSWORD` в окружении процесса. Не сохраняйте их в публичном `.env.example` и не включайте shell trace.
 
 ```bash
 # Только сформировать private YAML:

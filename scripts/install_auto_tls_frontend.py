@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Install the independent VPN Auto VLESS/TLS frontend; never restart an old entry."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
+import fcntl
 import grp
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -12,7 +15,9 @@ import socket
 import ssl
 import stat
 import subprocess
+import tempfile
 import time
+import vpn_env
 
 
 NAME = 'vpn-auto-tls-frontend'
@@ -22,11 +27,11 @@ LABEL = 'org.vpn-infra.role=' + NAME
 IMAGE = 'nginx:1.30.6-alpine@sha256:970364228b1e4f932abc22d321932816782cca8a20b85a77552a7cfe9acfb3b5'
 DOCKER = '/usr/bin/docker'
 DOCKER_HOST = '--host=unix:///var/run/docker.sock'
-ADDRESS = '212.22.70.156'
-PORT = 33175
-UPSTREAM = '127.0.0.1'
-UPSTREAM_PORT = 46738
-SOURCE_IP = '127.0.0.2'
+ADDRESS = env_value('VPN_ENTRY_ADDRESS')
+PORT = env_port('VPN_AUTO_TLS_PORT')
+UPSTREAM = env_value('VPN_LOOPBACK_IP')
+UPSTREAM_PORT = env_port('VPN_VLESS_AUTH_PORT')
+SOURCE_IP = env_value('VPN_AUTO_SOURCE_IP')
 SUBSCRIPTION = 'vpn-failover-subscription'
 CERT_DIRECTORY = Path('/etc') / SUBSCRIPTION
 TLS = CERT_DIRECTORY / 'tls.pem'
@@ -38,6 +43,9 @@ UNIT_PATH = Path('/etc/systemd/system') / UNIT
 CIDFILE = Path('/run') / NAME / 'container.cid'
 MAIN_CONFIG = Path('/usr/local/x-ui/bin/config.json')
 MAIN_XRAY = MAIN_CONFIG.with_name('xray-linux-amd64')
+ENV_NAMES = ('VPN_ENTRY_ADDRESS', 'VPN_AUTO_TLS_PORT', 'VPN_LOOPBACK_IP',
+             'VPN_VLESS_AUTH_PORT', 'VPN_AUTO_SOURCE_IP', 'VPN_BIND_IP',
+             'VPN_BIND_IPV6_IP', 'VPN_FAILOVER_SOCKS_PORT', 'VPN_XUI_API_PORT')
 
 
 def require(condition, message):
@@ -67,7 +75,7 @@ def stream_module(version):
 
 
 def nginx_config(load_module='', *, port=PORT, upstream_port=UPSTREAM_PORT, source=SOURCE_IP,
-                 listen='0.0.0.0', certificate=CERT_IN_CONTAINER, pid_path='/tmp/nginx.pid'):
+                 listen=env_value('VPN_BIND_IP'), certificate=CERT_IN_CONTAINER, pid_path='/tmp/nginx.pid'):
     return f"""{load_module}worker_processes 1;
 pid {pid_path};
 lock_file /tmp/vpn-auto-nginx.lock;
@@ -160,7 +168,7 @@ def validate_certificate():
 
 
 def validate_backend(config):
-    tag = 'in-46738-tcp'
+    tag = env_expand('in-${VPN_VLESS_AUTH_PORT}-tcp')
     inbounds = [i for i in config['inbounds'] if i.get('tag') == tag]
     require(len(inbounds) == 1, 'Expected one main Xray VLESS inbound')
     inbound = inbounds[0]
@@ -168,20 +176,20 @@ def validate_backend(config):
     transport = stream.get('rawSettings') or stream.get('tcpSettings') or {}
     require(inbound.get('protocol') == 'vless' and inbound.get('port') == UPSTREAM_PORT
             and inbound.get('settings', {}).get('decryption') == 'none'
-            and inbound.get('listen') in ('', '127.0.0.1', '0.0.0.0', '::')
+            and inbound.get('listen') in ('', env_value('VPN_LOOPBACK_IP'), env_value('VPN_BIND_IP'), env_value('VPN_BIND_IPV6_IP'))
             and stream.get('network') in ('raw', 'tcp') and stream.get('security', 'none') == 'none'
             and transport.get('header', {}).get('type', 'none') == 'none'
             and not transport.get('acceptProxyProtocol')
             and not stream.get('sockopt', {}).get('acceptProxyProtocol'),
             'Main Xray inbound is not compatible with raw VLESS forwarding')
-    expected = {'type': 'field', 'ruleTag': 'vpn-failover-source-127-0-0-2', 'inboundTag': [tag],
+    expected = {'type': 'field', 'ruleTag': 'vpn-failover-source-' + SOURCE_IP.replace('.', '-'), 'inboundTag': [tag],
                 'source': [SOURCE_IP + '/32'], 'outboundTag': 'vpn-failover-egress-pool'}
     rules = config['routing']['rules']
     matched = [r for r in rules if r.get('ruleTag') == expected['ruleTag']]
     outbounds = [o for o in config['outbounds'] if o.get('tag') == expected['outboundTag']]
     legacy = {'type': 'field', 'inboundTag': [tag], 'outboundTag': 'vpn-egress-pool'}
     require(matched == [expected] and outbounds == [{'tag': expected['outboundTag'], 'protocol': 'socks',
-            'settings': {'address': UPSTREAM, 'port': 11092}}]
+            'settings': {'address': UPSTREAM, 'port': env_port('VPN_FAILOVER_SOCKS_PORT')}}]
             and rules.count(legacy) == 1 and rules.index(expected) + 1 == rules.index(legacy),
             'Existing VPN Auto routing is unexpected')
     return [(r.get('outboundTag', ''), r.get('ruleTag', '')) for r in rules]
@@ -189,7 +197,7 @@ def validate_backend(config):
 
 def check_backend():
     expected = validate_backend(json.loads(MAIN_CONFIG.read_bytes()))
-    live = json.loads(command(str(MAIN_XRAY), 'api', 'lsrules', '--server=127.0.0.1:62789'))
+    live = json.loads(command(str(MAIN_XRAY), 'api', 'lsrules', env_expand('--server=${VPN_LOOPBACK_IP}:${VPN_XUI_API_PORT}')))
     require([(r.get('tag', ''), r.get('ruleTag', '')) for r in live['rules']] == expected,
             'The live main Xray routing differs from its saved configuration')
     try:
@@ -209,6 +217,100 @@ def write_new(path, data, mode):
         except BaseException:
             path.unlink(missing_ok=True)
             raise
+
+
+def environment_payload(runtime, extra_names=()):
+    """Keep installed root helpers independent of a checkout or root home."""
+    values = {name: env_port(name) if name.endswith('_PORT')
+              else str(ipaddress.ip_address(env_value(name)))
+              for name in (*ENV_NAMES, *extra_names)}
+    return {runtime / 'vpn_env.py': (Path(vpn_env.__file__).read_bytes(), 0o600),
+            runtime / 'vpn.env.json': ((json.dumps(values, indent=2) + '\n').encode(), 0o600)}
+
+
+def running_identity(unit, cidfile, role):
+    require(cidfile.is_file() and not cidfile.is_symlink(), 'The TLS container ID file is missing')
+    cid = cidfile.read_text().strip()
+    require(re.fullmatch(r'[a-f0-9]{64}', cid), 'Unexpected TLS container ID')
+    command('systemctl', 'is-active', '--quiet', unit)
+    pid = command('systemctl', 'show', '--property=MainPID', '--value', unit).strip()
+    state = json.loads(command(DOCKER, DOCKER_HOST, 'container', 'inspect',
+                              '--format', '{{json .}}', cid))
+    container_pid = state.get('State', {}).get('Pid')
+    require(pid.isdigit() and int(pid) > 0 and state.get('Id') == cid
+            and state.get('Config', {}).get('Labels', {}).get('org.vpn-infra.role') == role
+            and state.get('State', {}).get('Running') is True
+            and isinstance(container_pid, int) and container_pid > 0,
+            'The expected TLS service and container must already be running')
+    return pid, cid, container_pid
+
+
+def refresh_runtime_helpers(runtime, config, frozen, helpers, identity, verify):
+    """Replace only private Python support while the exact service stays alive."""
+    paths = (runtime, config, *frozen, *helpers)
+    require(not any(path.is_symlink() for path in paths), 'Refusing a symlink in the TLS installation')
+    for folder in (runtime, config):
+        info = folder.stat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == info.st_gid == 0
+                and stat.S_IMODE(info.st_mode) == 0o700, 'Unexpected private TLS directory metadata')
+    directory = os.open(runtime, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        for path, (data, mode) in frozen.items():
+            info = path.stat()
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0
+                    and stat.S_IMODE(info.st_mode) == mode and path.read_bytes() == data,
+                    'TLS configuration or unit differs; no files changed')
+        previous = {}
+        for path, (data, mode) in helpers.items():
+            require(path.parent == runtime and mode == 0o600, 'Unexpected TLS helper payload')
+            if path.exists():
+                info = path.stat()
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0
+                        and stat.S_IMODE(info.st_mode) == mode, 'Unsafe existing TLS helper metadata')
+                previous[path] = path.read_bytes()
+            else:
+                previous[path] = None
+            if path.suffix == '.py':
+                compile(data, path.name, 'exec')
+        baseline = identity()
+        verify()
+        changed = [path for path, (data, _) in helpers.items() if previous[path] != data]
+        if not changed:
+            require(identity() == baseline, 'TLS service identity changed during verification')
+            return False
+        replaced = []
+        with tempfile.TemporaryDirectory(prefix='.helpers-', dir=runtime) as directory_name:
+            staging = Path(directory_name)
+
+            def replace(path, data, suffix):
+                replacement = staging / (path.name + suffix)
+                write_new(replacement, data, 0o600)
+                os.chown(replacement, 0, 0)
+                os.replace(replacement, path)
+
+            try:
+                for path in changed:
+                    current = path.read_bytes() if path.exists() else None
+                    require(current == previous[path], 'TLS helper changed concurrently')
+                    replace(path, helpers[path][0], '.new')
+                    replaced.append(path)
+                os.fsync(directory)
+                verify()
+                require(identity() == baseline, 'TLS service identity changed during helper refresh')
+            except BaseException:
+                for path in reversed(replaced):
+                    require(path.is_file() and not path.is_symlink() and path.read_bytes() == helpers[path][0],
+                            'TLS helper changed concurrently; rollback refused')
+                    if previous[path] is None:
+                        path.unlink()
+                    else:
+                        replace(path, previous[path], '.old')
+                os.fsync(directory)
+                raise
+        return True
+    finally:
+        os.close(directory)
 
 
 def verify_listener():
@@ -254,23 +356,22 @@ def install():
     command(DOCKER, DOCKER_HOST, 'image', 'inspect', IMAGE)
     version = command(DOCKER, DOCKER_HOST, 'run', '--rm', '--pull=never', '--network=none', '--read-only', '--cap-drop=ALL',
                       '--user', f'{uid}:{gid}', '--entrypoint', '/usr/sbin/nginx', IMAGE, '-V', include_stderr=True).decode()
-    data = {CONFIG / 'nginx.conf': (nginx_config(stream_module(version)).encode(), 0o644),
-            APPLICATION: (Path(__file__).read_bytes(), 0o600), UNIT_PATH: (unit_text(uid, gid).encode(), 0o644)}
+    frozen = {CONFIG / 'nginx.conf': (nginx_config(stream_module(version)).encode(), 0o644),
+              UNIT_PATH: (unit_text(uid, gid).encode(), 0o644)}
+    helpers = {APPLICATION: (Path(__file__).read_bytes(), 0o600), **environment_payload(RUNTIME)}
+    data = {**frozen, **helpers}
     if any(os.path.lexists(p) for p in [CONFIG, RUNTIME, UNIT_PATH]):
-        require(not any(p.is_symlink() for p in [CONFIG, RUNTIME, *data])
-                and all(p.is_file() and p.read_bytes() == value for p, (value, _) in data.items()),
-                'A different TLS frontend installation already exists; no files changed')
-        command('systemctl', 'is-active', '--quiet', UNIT)
-        verify_listener()
-        check_container()
-        print(UNIT + ' already active; no changes applied')
+        require(APPLICATION.is_file(), 'Existing TLS frontend helper is missing')
+        changed = refresh_runtime_helpers(RUNTIME, CONFIG, frozen, helpers,
+                                          lambda: running_identity(UNIT, CIDFILE, NAME), verify_listener)
+        print(UNIT + (' private helpers refreshed; service unchanged' if changed else ' already active; no changes applied'))
         return
     require(command('systemctl', 'show', '--property=LoadState', '--value', UNIT).strip() == b'not-found',
             'The frontend service name is already in use')
     names = command(DOCKER, DOCKER_HOST, 'container', 'ls', '-a', '--format', '{{.Names}}').decode().splitlines()
     require(CONTAINER not in names, 'The frontend container name is already in use')
     with socket.socket() as listener:
-        listener.bind(('0.0.0.0', PORT))
+        listener.bind((env_value('VPN_BIND_IP'), PORT))
     created = []
     daemon_loaded = start_attempted = False
     try:

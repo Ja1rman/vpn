@@ -5,6 +5,7 @@ Only client_external_links is modified. Existing VPN settings, client records,
 tokens, and running processes are never changed. Run ``plan`` before ``publish``;
 ``rollback`` removes only unchanged rows inserted by the selected publication.
 """
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import base64
 from datetime import datetime, timezone
@@ -209,7 +210,7 @@ def require_listener_ready(port):
     if status.returncode:
         raise RuntimeError("The compatible VLESS service is not active")
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=3):
+        with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=3):
             pass
     except OSError:
         raise RuntimeError("The compatible VLESS TCP listener is not reachable") from None
@@ -308,7 +309,7 @@ def main():
         item = commands.add_parser(command)
         item.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
         item.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-        item.add_argument("--address", default="212.22.70.156")
+        item.add_argument("--address", default=env_value('VPN_ENTRY_ADDRESS'))
         if command == "publish":
             item.add_argument("--backup-root", type=Path, default=DEFAULT_BACKUP_ROOT)
     item = commands.add_parser("rollback")

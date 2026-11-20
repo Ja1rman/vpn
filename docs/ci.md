@@ -17,12 +17,16 @@
 
 | Secret | Содержимое |
 |---|---|
+| `VPN_ENDPOINTS_JSON` | Закрытый JSON с адресами и портами `VPN_*`; локальный источник — `.local/network-env.json` |
 | `VPN_SSH_PASSWORDS_JSON` | JSON: имя хоста из inventory → SSH-пароль |
 | `VPN_SSH_KNOWN_HOSTS` | Подтверждённые строки `known_hosts`; проверка ключей обязательна |
 | `VPN_OUTBOUNDS_JSON` | JSON: путь outbound из inventory → полный клиентский outbound Xray |
 | `VPN_MONITORING_PASSWORD` | Действующий пароль Grafana/HTTP Basic Auth, не короче 24 символов |
 | `VPN_MONITORING_TLS_JSON` | CA **сертификат**, клиентская и серверные пары сертификат/ключ для Node Exporter |
 | `VPN_ALERTMANAGER_CONFIG` | Private YAML Alertmanager с настроенной почтовой доставкой. При отсутствии используется tracked `web-only` |
+| `VPN_MTPROTO_SECRET` | Действующий FakeTLS-секрет Telegram MTProto |
+| `VPN_TELEGRAM_SOCKS_USERNAME` | Логин отдельного Telegram SOCKS5 |
+| `VPN_TELEGRAM_SOCKS_PASSWORD` | Пароль отдельного Telegram SOCKS5 |
 
 Workflow передаёт Secrets в окружение шага deploy; `ci_environment.py` создаёт из них файлы с правами `600` в закрытой `.local/`. JSON-секреты и вложенные строковые значения добавляются в маскирование логов. Секреты не передаются аргументами CLI, не публикуются в artifacts/cache; `.local/` удаляется в завершающем шаге даже при ошибке.
 
@@ -38,8 +42,8 @@ Workflow передаёт Secrets в окружение шага deploy; `ci_env
     ".local/outbounds/exit-example.json": {
       "protocol": "vless",
       "settings": {
-        "address": "203.0.113.10",
-        "port": 443,
+        "address": "${VPN_NEW_EXIT_ADDRESS}",
+        "port": "${VPN_EXIT_TLS_PORT}",
         "id": "UUID_FROM_X_UI",
         "encryption": "none"
       }
@@ -74,7 +78,7 @@ gh auth login
 python3 scripts/sync_github_secrets.py --repo Ja1rman/vpn
 ```
 
-Скрипт читает текущие файлы `.local/ssh`, `.local/outbounds`, `.local/access.json` и leaf-пары `.local/pki`. В `VPN_OUTBOUNDS_JSON` включаются файлы узлов из `nodes[].outbounds` и резервов из `balancer.reserve_outbounds[].file`. GitHub CLI шифрует значения перед отправкой в API. Он создаёт Environment `production` с доступом к развёртыванию только из ветки `main`, обновляет пять обязательных Secrets и логин, затем всегда оставляет `VPN_DEPLOY_ENABLED=false`. После синхронизации для будущего deploy снова включите переменную явно.
+Скрипт читает текущие файлы `.local/ssh`, `.local/outbounds`, `.local/access.json`, `.local/network-env.json` и leaf-пары `.local/pki`. При наличии приватных access-файлов Telegram он также обновляет их Secrets. В `VPN_OUTBOUNDS_JSON` включаются файлы узлов из `nodes[].outbounds` и резервов из `balancer.reserve_outbounds[].file`. GitHub CLI шифрует значения перед отправкой в API. Он создаёт Environment `production` с доступом к развёртыванию только из ветки `main`, обновляет Secrets и логин, затем всегда оставляет `VPN_DEPLOY_ENABLED=false`. После синхронизации для будущего deploy снова включите переменную явно.
 
 Если существует `.local/alertmanager.yml`, его содержимое тоже сохраняется в `VPN_ALERTMANAGER_CONFIG`. Если файла нет, существующий Secret не удаляется. Почта настроена; для её отключения удалите Secret отдельно или загрузите согласованный web-only YAML. После смены получателей/SMTP используйте `configure_email.py --apply --publish-secret`; подробности — [почтовые уведомления](email.md).
 
@@ -90,7 +94,7 @@ python3 scripts/sync_github_secrets.py --repo Ja1rman/vpn
 | `pool` | Горячее обновление outbounds/routing отдельного балансировщика |
 | `monitoring` | Compose: Prometheus, Alertmanager, Blackbox, Grafana, nginx |
 | `node-exporters` | Обновление Node Exporter на входном и выходных серверах |
-| `mtproto` | Отдельный Telegram-прокси через уже установленный VPN Auto. Требует Secret `VPN_MTPROTO_SECRET` |
+| `mtproto` | MTProto и SOCKS5 через установленный VPN Auto. Требует `VPN_MTPROTO_SECRET`, `VPN_TELEGRAM_SOCKS_USERNAME` и `VPN_TELEGRAM_SOCKS_PASSWORD` |
 | `all` | Node Exporter → мониторинг → горячее обновление пула |
 
 До изменения каждого затрагиваемого сервера создаётся private backup в `/var/backups/vpn-infra/ci/<UTC>-<run-id>-<attempt>/configuration.tar.gz`, права каталога `700`, архива `600`. Его можно забрать по SSH; в публичные Actions artifacts архив не попадает. Архивы автоматически не удаляются.

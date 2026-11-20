@@ -4,11 +4,13 @@
 The old URL and panel are unchanged. The SubID is an existing bearer secret;
 it is never recorded in this service's logs or included in errors.
 """
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import base64
 from dataclasses import dataclass
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 from pathlib import Path
 import re
 import socket
@@ -21,12 +23,16 @@ from uuid import UUID
 MAX_BODY = 128 * 1024
 REQUEST_TIMEOUT = 6
 MAX_CONCURRENT = 16
-# Both paths on :2097 produce the same filtered feed. The full x-ui feed
-# remains on :2096/sub/ and is never served by this handler.
+# Both supported paths produce the same filtered feed. The full x-ui feed
+# stays on its separate upstream listener.
 SUB_PATH = re.compile(r"/(?:failover|sub)/([A-Za-z0-9_-]{1,128})")
 ANDROID_PREFIX = "mc-ubuntu-breeze-reef-android-"
 PASS_REQUEST_HEADERS = ("User-Agent", "X-HWID", "X-Device-OS", "X-Ver-OS", "X-Device-Model")
 PASS_RESPONSE_HEADERS = ("Subscription-Userinfo", "Profile-Update-Interval", "Support-Url", "Announce")
+URI_CONTENT_TYPE = "text/plain; charset=utf-8"
+JSON_CONTENT_TYPE = "application/json; charset=utf-8"
+NEKOBOX_AGENT = re.compile(r"NekoBox/Android/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                          r"(?: \(Prefer ClashMeta Format\))?")
 
 
 class MissingSubscription(Exception):
@@ -39,14 +45,14 @@ class InvalidSubscription(Exception):
 
 @dataclass(frozen=True)
 class Settings:
-    address: str = "212.22.70.156"
-    upstream_port: int = 2096
-    source_port: int = 33173
-    target_port: int = 33174
+    address: str = env_value('VPN_ENTRY_ADDRESS')
+    upstream_port: int = env_port('VPN_SUBSCRIPTION_PORT')
+    source_port: int = env_port('VPN_COMPAT_VLESS_PORT')
+    target_port: int = env_port('VPN_AUTO_REALITY_PORT')
     title: str = "VPN Auto"
-    tls_source_port: int = 46738
-    tls_target_port: int = 33175
-    tls_standard_port: int = 33176
+    tls_source_port: int = env_port('VPN_VLESS_AUTH_PORT')
+    tls_target_port: int = env_port('VPN_AUTO_TLS_PUBLIC_PORT')
+    tls_standard_port: int = env_port('VPN_STANDARD_TLS_PORT')
 
 
 def header_value(value):
@@ -56,7 +62,7 @@ def header_value(value):
 
 
 def rewrite_profile(body, settings):
-    """Preserve the existing REALITY link or derive TLS from the x-ui VLESS profile."""
+    """Prefer the authorized x-ui VLESS TLS profile, with a legacy REALITY fallback."""
     if not body.strip():
         raise MissingSubscription()
     if len(body) > MAX_BODY:
@@ -98,12 +104,14 @@ def rewrite_profile(body, settings):
     if len(matching) > 1:
         raise InvalidSubscription()
     title = quote(settings.title, safe="")
-    if matching:
+    try:
+        url = tls_profile(lines, settings, title)
+    except MissingSubscription:
+        if not matching:
+            raise
         selected = matching[0]
         authority = selected.netloc.rsplit(":", 1)[0] + ":" + str(settings.target_port)
         url = urlunsplit((selected.scheme, authority, selected.path, selected.query, title))
-    else:
-        url = tls_profile(lines, settings, title)
     return base64.b64encode((url + "\n").encode())
 
 
@@ -142,14 +150,44 @@ def tls_profile(lines, settings, title):
     port, uid, address = matching[0]
     authority = f"{uid}@{address}:{settings.tls_target_port}"
     query = urlencode({"type": "tcp", "security": "tls", "encryption": "none",
-                       "packetEncoding": "xudp"})
+                       "packetEncoding": "xudp", "sni": settings.address, "fp": "chrome"})
     return urlunsplit(("vless", authority, "", query, title))
+
+
+def nekobox_response(body, settings, user_agent):
+    """Use NekoBox's outbound importer without carrying older VLESS MUX flags."""
+    match = NEKOBOX_AGENT.fullmatch(header_value(user_agent) or "")
+    if not match or tuple(int(value) for value in match.groups()) < (1, 3, 8):
+        return body, URI_CONTENT_TYPE
+    try:
+        lines = base64.b64decode(body, validate=True).decode().splitlines()
+        if len(lines) != 1:
+            raise ValueError()
+        profile = urlsplit(lines[0])
+        query = parse_qs(profile.query, keep_blank_values=True, strict_parsing=True, max_num_fields=32)
+        if query.get("security") == ["reality"]:
+            return body, URI_CONTENT_TYPE
+        expected = {"type": ["tcp"], "security": ["tls"], "encryption": ["none"],
+                    "packetEncoding": ["xudp"], "sni": [settings.address], "fp": ["chrome"]}
+        if (profile.scheme != "vless" or profile.hostname != settings.address.lower()
+                or profile.port != settings.tls_target_port or profile.password is not None
+                or profile.path or unquote(profile.fragment) != settings.title or query != expected):
+            raise ValueError()
+        uid = str(UUID(profile.username))
+    except (TypeError, ValueError, UnicodeError):
+        raise InvalidSubscription() from None
+    outbound = {"type": "vless", "tag": settings.title, "server": settings.address,
+                "server_port": settings.tls_target_port, "uuid": uid, "packet_encoding": "xudp",
+                "multiplex": {"enabled": False},
+                "tls": {"enabled": True, "server_name": settings.address, "insecure": False,
+                        "utls": {"enabled": True, "fingerprint": "chrome"}}}
+    return (json.dumps({"outbounds": [outbound]}, ensure_ascii=False, separators=(",", ":")) + "\n").encode(), JSON_CONTENT_TYPE
 
 
 class LoopbackHTTPSConnection(http.client.HTTPSConnection):
     """Pin the actual network destination while validating the public IP cert."""
     def connect(self):
-        raw = socket.create_connection(("127.0.0.1", self.port), self.timeout)
+        raw = socket.create_connection((env_value('VPN_LOOPBACK_IP'), self.port), self.timeout)
         try:
             self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
         except BaseException:
@@ -175,6 +213,9 @@ def fetch_profile(sub_id, headers, settings, upstream_context):
         response_headers = {name: value for name in PASS_RESPONSE_HEADERS
                             if (value := header_value(result.getheader(name)))}
         body = rewrite_profile(result.read(MAX_BODY + 1), settings)
+        body, content_type = nekobox_response(body, settings, headers.get("User-Agent"))
+        if content_type == JSON_CONTENT_TYPE:
+            response_headers["Content-Type"] = content_type
     except (http.client.HTTPException, OSError):
         raise InvalidSubscription() from None
     finally:
@@ -239,13 +280,17 @@ class SubscriptionHandler(BaseHTTPRequestHandler):
 
     def reply(self, status, body, headers=None):
         self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        content_type = (headers or {}).get("Content-Type", URI_CONTENT_TYPE)
+        if content_type not in (URI_CONTENT_TYPE, JSON_CONTENT_TYPE):
+            content_type = URI_CONTENT_TYPE
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "private, no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
         for name, value in (headers or {}).items():
-            self.send_header(name, value)
+            if name.lower() != "content-type":
+                self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -309,8 +354,8 @@ def tcp_port(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--listen", default="0.0.0.0")
-    parser.add_argument("--port", type=tcp_port, default=2097)
+    parser.add_argument("--listen", default=env_value('VPN_BIND_IP'))
+    parser.add_argument("--port", type=tcp_port, default=env_port('VPN_AUTO_SUBSCRIPTION_PORT'))
     parser.add_argument("--address", default=Settings.address, help="Public gateway address and upstream TLS name")
     parser.add_argument("--upstream-port", type=tcp_port, default=Settings.upstream_port)
     parser.add_argument("--source-port", type=tcp_port, default=Settings.source_port)

@@ -6,6 +6,7 @@ The template is persisted using a compare-and-swap SQLite transaction so no
 panel reconcile (and its possible restart fallback) is triggered. x-ui reads
 this setting from SQLite whenever it builds the desired configuration.
 """
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import base64
 import copy
 from datetime import datetime, timezone
@@ -28,10 +29,10 @@ from verify_vpn import udp_dns
 XRAY = '/usr/local/x-ui/bin/xray-linux-amd64'
 CONFIG = Path('/usr/local/x-ui/bin/config.json')
 DB = '/etc/x-ui/x-ui.db'
-TARGETS = {'in-26279-tcp': ('http', 26279),
-           'in-48607-tcp': ('http', 48607),
-           'in-13298-tcp': ('mixed', 13298),
-           'in-36307-udp': ('wireguard', 36307)}
+TARGETS = {env_expand('in-${VPN_HTTP_PRIMARY_PORT}-tcp'): ('http', env_port('VPN_HTTP_PRIMARY_PORT')),
+           env_expand('in-${VPN_HTTP_SECONDARY_PORT}-tcp'): ('http', env_port('VPN_HTTP_SECONDARY_PORT')),
+           env_expand('in-${VPN_HTTP_SOCKS_PORT}-tcp'): ('mixed', env_port('VPN_HTTP_SOCKS_PORT')),
+           env_expand('in-${VPN_WIREGUARD_LEGACY_PORT}-udp'): ('wireguard', env_port('VPN_WIREGUARD_LEGACY_PORT'))}
 POOL = 'vpn-egress-pool'
 
 
@@ -40,7 +41,7 @@ def add_routes(config):
     new = copy.deepcopy(config)
     out = next((o for o in config['outbounds'] if o.get('tag') == POOL), None)
     if out != {'tag': POOL, 'protocol': 'socks',
-               'settings': {'address': '127.0.0.1', 'port': 11090}}:
+               'settings': {'address': env_value('VPN_LOOPBACK_IP'), 'port': env_port('VPN_BALANCER_SOCKS_PORT')}}:
         raise ValueError('Expected loopback pool outbound is missing or different')
     for tag in TARGETS:
         matches = [r for r in config['routing']['rules']
@@ -104,7 +105,7 @@ def save_runtime(expected, desired):
 
 
 def apply_routing(path):
-    result = subprocess.run([XRAY, 'api', 'adrules', '--server=127.0.0.1:62789', str(path)],
+    result = subprocess.run([XRAY, 'api', 'adrules', env_expand('--server=${VPN_LOOPBACK_IP}:${VPN_XUI_API_PORT}'), str(path)],
                             capture_output=True, text=True, timeout=15,
                             env=dict(os.environ, XRAY_LOCATION_ASSET='/usr/local/x-ui/bin'))
     if result.returncode:
@@ -141,10 +142,10 @@ class Tunnel:
     """Hold an authenticated HTTP CONNECT connection across the routing swap."""
     def __init__(self, inbound):
         self.banner_received = False
-        destination = '144.31.34.165:22'
+        destination = env_expand('${VPN_NL_ADDRESS}:${VPN_SSH_PORT}')
         account = inbound['settings']['accounts'][0]
         auth = base64.b64encode((account['user'] + ':' + account['pass']).encode()).decode()
-        sock = socket.create_connection(('127.0.0.1', inbound['port']), timeout=12)
+        sock = socket.create_connection((env_value('VPN_LOOPBACK_IP'), inbound['port']), timeout=12)
         try:
             sock.sendall((f'CONNECT {destination} HTTP/1.1\r\nHost: {destination}\r\n'
                           'Proxy-Authorization: Basic ' + auth + '\r\n\r\n').encode())
@@ -192,8 +193,8 @@ def route_checks(panel):
     checks = []
     for tag in TARGETS:
         for network in ['tcp', 'udp']:
-            result = panel.request('xray/routeTest', {'inboundTag': tag, 'ip': '1.1.1.1',
-                                                     'port': 443, 'network': network})
+            result = panel.request('xray/routeTest', {'inboundTag': tag, 'ip': env_value('VPN_DNS_ADDRESS'),
+                                                     'port': env_port('VPN_WEB_HTTPS_PORT'), 'network': network})
             if not result.get('matched') or result.get('outboundTag') != POOL:
                 raise RuntimeError('Live route test failed for ' + tag + '/' + network)
             checks.append(tag + '/' + network)
@@ -254,7 +255,7 @@ def main():
     if result.returncode:
         raise RuntimeError('Candidate failed Xray config validation')
     pids = xray_pids()
-    expected = probe('socks5h://127.0.0.1:11090')
+    expected = probe(env_expand('socks5h://${VPN_LOOPBACK_IP}:${VPN_BALANCER_SOCKS_PORT}'))
     panel = Panel()
     tunnels = {}
     before = {}
@@ -285,13 +286,13 @@ def main():
                     for scheme in (['http', 'socks5h'] if protocol == 'mixed' else ['http']):
                         if time.monotonic() - started > 130:
                             raise RuntimeError('Verification deadline exceeded')
-                        address = probe(scheme + '://127.0.0.1:' + str(port), account)
+                        address = probe(scheme + env_expand('://${VPN_LOOPBACK_IP}:') + str(port), account)
                         if address != expected:
                             raise RuntimeError('Wrong exit IP on ' + tag + '/' + scheme)
                         exits[f'{tag}/{scheme}/account-{index + 1}'] = address
             # Verify SOCKS UDP through the common pool without borrowing an
             # existing WireGuard peer key (that would move its live endpoint).
-            udp_dns(11090)
+            udp_dns(env_port('VPN_BALANCER_SOCKS_PORT'))
             if pids != xray_pids() or old['inbounds'] != json.loads(CONFIG.read_text())['inbounds']:
                 raise RuntimeError('VPN process or inbound configuration changed')
             report = {'targets': list(TARGETS), 'new_connection_exit_ips': exits,

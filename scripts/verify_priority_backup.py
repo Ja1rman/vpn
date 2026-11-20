@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Test a real backup in an isolated pool with a deliberately unreachable primary."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import copy
 import json
@@ -16,7 +17,7 @@ from verify_vpn import udp_dns
 
 def free_port():
     with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
+        sock.bind((env_value('VPN_LOOPBACK_IP'), 0))
         return sock.getsockname()[1]
 
 
@@ -36,12 +37,12 @@ def main():
         primary = next(o for o in config['outbounds'] if o['tag'] == tag)
         if 'address' not in primary['settings'] or 'port' not in primary['settings']:
             raise RuntimeError('Unsupported outbound schema for isolated test')
-        primary['settings'].update(address='127.0.0.1', port=free_port())
+        primary['settings'].update(address=env_value('VPN_LOOPBACK_IP'), port=free_port())
     socks_port = free_port()
     sniff_port = None
     for inbound in config['inbounds']:
         inbound['port'] = socks_port if inbound['tag'] == 'pool-socks' else free_port()
-        inbound['listen'] = '127.0.0.1'
+        inbound['listen'] = env_value('VPN_LOOPBACK_IP')
         if inbound['tag'] == 'pool-ip-sniff':
             sniff_port = inbound['port']
     for outbound in config['outbounds']:
@@ -63,7 +64,7 @@ def main():
             ips = []
             while time.monotonic() < deadline and len(ips) < 4:
                 result = subprocess.run(['curl', '--fail', '--silent', '--max-time', '6', '--proxy',
-                                         'socks5h://127.0.0.1:' + str(socks_port), 'https://api.ipify.org'],
+                                         env_expand('socks5h://${VPN_LOOPBACK_IP}:') + str(socks_port), 'https://api.ipify.org'],
                                         capture_output=True)
                 if result.returncode == 0:
                     ip = result.stdout.decode().strip()

@@ -6,6 +6,7 @@ peer's endpoint. Instead clone its protocol settings into an independent
 loopback process; test the actual input's live route separately via routeTest.
 Requires python3-cryptography on entry. Does not create kernel interfaces.
 """
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import base64
 import copy
 import json
@@ -30,20 +31,20 @@ def keypair():
 
 def free_port(kind):
     with socket.socket(socket.AF_INET, kind) as sock:
-        sock.bind(('127.0.0.1', 0))
+        sock.bind((env_value('VPN_LOOPBACK_IP'), 0))
         return sock.getsockname()[1]
 
 
 def main():
     os.umask(0o077)
     main_config = json.loads(Path('/usr/local/x-ui/bin/config.json').read_text())
-    inbound = copy.deepcopy(next(i for i in main_config['inbounds'] if i['tag'] == 'in-36307-udp'))
+    inbound = copy.deepcopy(next(i for i in main_config['inbounds'] if i['tag'] == env_expand('in-${VPN_WIREGUARD_LEGACY_PORT}-udp')))
     server_key, server_public = keypair()
     client_key, client_public = keypair()
     wg_port, socks_port = free_port(socket.SOCK_DGRAM), free_port(socket.SOCK_STREAM)
-    inbound.update(listen='127.0.0.1', port=wg_port)
+    inbound.update(listen=env_value('VPN_LOOPBACK_IP'), port=wg_port)
     inbound['settings'].update(secretKey=server_key, noKernelTun=True,
-                               peers=[{'publicKey': client_public, 'allowedIPs': ['10.0.0.2/32']}])
+                               peers=[{'publicKey': client_public, 'allowedIPs': [env_expand('${VPN_WIREGUARD_CLIENT_ADDRESS}/32')]}])
     pool = copy.deepcopy(next(o for o in main_config['outbounds'] if o['tag'] == 'vpn-egress-pool'))
     # Copy the ACTUAL rules selecting this inbound; no default pool route can
     # conceal a missing WG tag. An unmatched request is blackholed.
@@ -53,14 +54,14 @@ def main():
               'outbounds': [{'tag': 'blocked', 'protocol': 'blackhole'}, pool],
               'routing': {'domainStrategy': main_config['routing']['domainStrategy'], 'rules': rules}}
     client = {'log': {'loglevel': 'warning'},
-              'inbounds': [{'listen': '127.0.0.1', 'port': socks_port, 'protocol': 'socks',
+              'inbounds': [{'listen': env_value('VPN_LOOPBACK_IP'), 'port': socks_port, 'protocol': 'socks',
                             'settings': {'auth': 'noauth', 'udp': True}}],
               'outbounds': [{'tag': 'wg-canary', 'protocol': 'wireguard',
-                             'settings': {'secretKey': client_key, 'address': ['10.0.0.2/32'],
+                             'settings': {'secretKey': client_key, 'address': [env_expand('${VPN_WIREGUARD_CLIENT_ADDRESS}/32')],
                                           'noKernelTun': True, 'mtu': inbound['settings'].get('mtu', 1420),
-                                          'peers': [{'endpoint': '127.0.0.1:' + str(wg_port),
+                                          'peers': [{'endpoint': env_expand('${VPN_LOOPBACK_IP}:') + str(wg_port),
                                                      'publicKey': server_public,
-                                                     'allowedIPs': ['0.0.0.0/0']} ]}}]}
+                                                     'allowedIPs': [env_expand('${VPN_BIND_IP}/0')]} ]}}]}
     processes = []
     with tempfile.TemporaryDirectory(prefix='vpn-wg-canary-') as tmp:
         try:
@@ -74,8 +75,8 @@ def main():
                 time.sleep(0.5)
                 if processes[-1].poll() is not None:
                     raise RuntimeError('Disposable WG ' + name + ' failed to start')
-            ips = [probe('socks5h://127.0.0.1:' + str(socks_port)) for _ in range(4)]
-            if ips != ['144.31.34.165'] * 4:
+            ips = [probe(env_expand('socks5h://${VPN_LOOPBACK_IP}:') + str(socks_port)) for _ in range(4)]
+            if ips != [env_value('VPN_NL_ADDRESS')] * 4:
                 raise RuntimeError('Unexpected isolated WireGuard exit')
             udp_dns(socks_port)
             print(json.dumps({'wireguard_isolated_tcp_exit_ips': ips, 'wireguard_isolated_udp_dns': 'passed',

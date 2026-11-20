@@ -5,19 +5,19 @@ tests:
   - name: unavailable-targets
     interval: 1m
     input_series:
-      - series: 'up{job="node",host="exit-a",instance="exit-a:19100"}'
+      - series: 'up{job="node",host="exit-a",instance="exit-a:${VPN_NODE_EXPORTER_PORT}"}'
         values: '0x5'
       - series: 'probe_success{job="vpn-egress",host="entry",instance="probe"}'
         values: '0x5'
       - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="probe"}'
         values: '1x5'
-      - series: 'probe_success{job="vpn-tcp",host="exit-a",instance="exit-a:443"}'
+      - series: 'probe_success{job="vpn-tcp",host="exit-a",instance="exit-a:${VPN_EXIT_TLS_PORT}"}'
         values: '0x5'
     alert_rule_test:
       - eval_time: 2m
         alertname: NodeUnavailable
         exp_alerts:
-          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:19100', severity: warning}
+          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:${VPN_NODE_EXPORTER_PORT}', severity: warning}
             exp_annotations:
               summary: 'Сервер exit-a: метрики недоступны'
               description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
@@ -34,10 +34,10 @@ tests:
       - eval_time: 3m
         alertname: VpnPortUnavailable
         exp_alerts:
-          - exp_labels: {job: vpn-tcp, host: exit-a, instance: 'exit-a:443', severity: warning}
+          - exp_labels: {job: vpn-tcp, host: exit-a, instance: 'exit-a:${VPN_EXIT_TLS_PORT}', severity: warning}
             exp_annotations:
               summary: 'VPN exit-a: порт недоступен'
-              description: 'TCP-проверка exit-a:443 не проходила три минуты.'
+              description: 'TCP-проверка exit-a:${VPN_EXIT_TLS_PORT} не проходила три минуты.'
   - name: failover-egress-requires-all-targets-to-fail-and-debounces-recovery
     interval: 1m
     input_series:
@@ -45,7 +45,7 @@ tests:
         values: '0x3 1x6'
       - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="target-b"}'
         values: '0x10'
-      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:33174"}'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:${VPN_AUTO_REALITY_PORT}"}'
         values: '1x10'
     alert_rule_test:
       - eval_time: 1m
@@ -67,7 +67,7 @@ tests:
   - name: node-email-window-closes-without-resolving-an-ongoing-outage
     interval: 1m
     input_series:
-      - series: 'up{job="node",host="exit-a",instance="exit-a:19100"}'
+      - series: 'up{job="node",host="exit-a",instance="exit-a:${VPN_NODE_EXPORTER_PORT}"}'
         values: '0x30 1x8 0x24'
     alert_rule_test:
       - eval_time: 1m
@@ -92,7 +92,7 @@ tests:
       - eval_time: 30m
         alertname: NodeUnavailable
         exp_alerts:
-          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:19100', severity: warning}
+          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:${VPN_NODE_EXPORTER_PORT}', severity: warning}
             exp_annotations:
               summary: 'Сервер exit-a: метрики недоступны'
               description: 'Node Exporter не отвечал не менее двух минут; проверьте сервер, сеть и сбор метрик.'
@@ -110,11 +110,11 @@ tests:
         values: '0x8'
       - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="target-b"}'
         values: '1x8'
-      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:33174"}'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:${VPN_AUTO_REALITY_PORT}"}'
         values: '1x1 0x6'
-      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="auth",instance="entry:46738"}'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="auth",instance="entry:${VPN_VLESS_AUTH_PORT}"}'
         values: '1x8'
-      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="subscription",instance="entry:2097"}'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="subscription",instance="entry:${VPN_AUTO_SUBSCRIPTION_PORT}"}'
         values: '0x8'
     alert_rule_test:
       - eval_time: 3m
@@ -126,20 +126,59 @@ tests:
       - eval_time: 5m
         alertname: VpnPortUnavailable
         exp_alerts:
-          - exp_labels: {job: vpn-tcp, host: entry, service: failover, role: subscription, instance: 'entry:2097', severity: warning}
+          - exp_labels: {job: vpn-tcp, host: entry, service: failover, role: subscription, instance: 'entry:${VPN_AUTO_SUBSCRIPTION_PORT}', severity: warning}
             exp_annotations:
               summary: 'VPN entry: порт недоступен'
-              description: 'TCP-проверка entry:2097 не проходила три минуты.'
+              description: 'TCP-проверка entry:${VPN_AUTO_SUBSCRIPTION_PORT} не проходила три минуты.'
+  - name: published-tls-outage-is-one-existing-service-alert
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="target-a"}'
+        values: '1x6'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:${VPN_AUTO_REALITY_PORT}"}'
+        values: '1x6'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:${VPN_AUTO_TLS_PUBLIC_PORT}"}'
+        values: '0x6'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="auth",instance="entry:${VPN_VLESS_AUTH_PORT}"}'
+        values: '1x6'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: *failover_alert
+      - eval_time: 3m
+        alertname: VpnPortUnavailable
+        exp_alerts: []
+  - name: simultaneous-frontends-and-auth-outage-stays-one-service-alert
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="vpn-egress",host="entry",service="failover",instance="target-a"}'
+        values: '1x6'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:${VPN_AUTO_REALITY_PORT}"}'
+        values: '0x6'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="frontend",instance="entry:${VPN_AUTO_TLS_PUBLIC_PORT}"}'
+        values: '0x6'
+      - series: 'probe_success{job="vpn-tcp",host="entry",service="failover",role="auth",instance="entry:${VPN_VLESS_AUTH_PORT}"}'
+        values: '0x6'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VpnFailoverUnavailable
+        exp_alerts: *failover_alert
+      - eval_time: 3m
+        alertname: VpnPortUnavailable
+        exp_alerts: []
   - name: high-network-and-healthy-target
     interval: 1m
     input_series:
-      - series: 'up{job="node",host="exit-a",instance="exit-a:19100"}'
+      - series: 'up{job="node",host="exit-a",instance="exit-a:${VPN_NODE_EXPORTER_PORT}"}'
         values: '1x20'
-      - series: 'node_network_receive_bytes_total{job="node",host="exit-a",instance="exit-a:19100",device="eth0"}'
+      - series: 'node_network_receive_bytes_total{job="node",host="exit-a",instance="exit-a:${VPN_NODE_EXPORTER_PORT}",device="eth0"}'
         values: '0+600000000x20'
-      - series: 'node_network_transmit_bytes_total{job="node",host="exit-a",instance="exit-a:19100",device="eth0"}'
+      - series: 'node_network_transmit_bytes_total{job="node",host="exit-a",instance="exit-a:${VPN_NODE_EXPORTER_PORT}",device="eth0"}'
         values: '0+600000000x20'
-      - series: 'vpn_network_capacity_bits{job="node",host="exit-a",instance="exit-a:19100",device="eth0"}'
+      - series: 'vpn_network_capacity_bits{job="node",host="exit-a",instance="exit-a:${VPN_NODE_EXPORTER_PORT}",device="eth0"}'
         values: '100000000x20'
     alert_rule_test:
       - eval_time: 15m
@@ -148,7 +187,7 @@ tests:
       - eval_time: 15m
         alertname: HighNetworkTraffic
         exp_alerts:
-          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:19100', device: eth0, severity: warning}
+          - exp_labels: {job: node, host: exit-a, instance: 'exit-a:${VPN_NODE_EXPORTER_PORT}', device: eth0, severity: warning}
             exp_annotations:
               summary: 'Высокий сетевой трафик: exit-a / eth0'
               description: 'Сумма RX+TX выше 85% заданного бюджета канала в течение 10 минут. Для full duplex бюджет задаётся как допустимая сумма направлений.'

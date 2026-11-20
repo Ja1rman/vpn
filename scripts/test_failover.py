@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Failure drill in isolated processes on loopback; never stops production VPN."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import json
 import os
 from pathlib import Path
@@ -22,7 +23,7 @@ def main():
             proc=subprocess.Popen([XRAY,'run','-config',str(path)],env=ENV,stdout=log,stderr=log)
             processes.append(proc);return proc
         def picks():
-            result=subprocess.run([XRAY,'api','bi','--server=127.0.0.1:28101','fixture'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True)
+            result=subprocess.run([XRAY,'api','bi',env_expand('--server=${VPN_LOOPBACK_IP}:${VPN_TEST_API_PORT}'),'fixture'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True)
             return result.stdout.decode().split('Selects:')[-1]
         def wait_for(predicate):
             deadline=time.monotonic()+45
@@ -34,11 +35,11 @@ def main():
                 time.sleep(1)
             raise RuntimeError('Failover state did not converge: '+picks())
         uid=str(uuid.uuid4())
-        for name,port in [('a',28102),('b',28103)]:
-            start(name,{'log':{'loglevel':'error'},'inbounds':[{'tag':name,'listen':'127.0.0.1','port':port,'protocol':'vless','settings':{'clients':[{'id':uid}],'decryption':'none'}}],'outbounds':[{'tag':'direct','protocol':'freedom'}]})
+        for name,port in [('a',env_port('VPN_TEST_EXIT_A_PORT')),('b',env_port('VPN_TEST_EXIT_B_PORT'))]:
+            start(name,{'log':{'loglevel':'error'},'inbounds':[{'tag':name,'listen':env_value('VPN_LOOPBACK_IP'),'port':port,'protocol':'vless','settings':{'clients':[{'id':uid}],'decryption':'none'}}],'outbounds':[{'tag':'direct','protocol':'freedom'}]})
         exits=processes.copy()
-        start('pool',{'log':{'loglevel':'error'},'api':{'tag':'api','services':['RoutingService']},'inbounds':[{'tag':'socks','listen':'127.0.0.1','port':28100,'protocol':'socks','settings':{'auth':'noauth'}},{'tag':'api','listen':'127.0.0.1','port':28101,'protocol':'tunnel','settings':{'address':'127.0.0.1'}}], 'outbounds':[{'tag':'blocked','protocol':'blackhole'}]+[{'tag':'fixture-'+name,'protocol':'vless','settings':{'address':'127.0.0.1','port':port,'id':uid,'encryption':'none'}} for name,port in [('a',28102),('b',28103)]], 'routing':{'rules':[{'type':'field','inboundTag':['api'],'outboundTag':'api'},{'type':'field','inboundTag':['socks'],'balancerTag':'fixture'}],'balancers':[{'tag':'fixture','selector':['fixture-'],'fallbackTag':'blocked','strategy':{'type':'roundRobin'}}]}, 'observatory':{'subjectSelector':['fixture-'],'probeUrl':'https://www.google.com/generate_204','probeInterval':'2s','enableConcurrency':True}})
-        def request():return subprocess.run(['curl','--fail','--silent','--show-error','--max-time','8','--proxy','socks5h://127.0.0.1:28100','https://www.google.com/generate_204'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        start('pool',{'log':{'loglevel':'error'},'api':{'tag':'api','services':['RoutingService']},'inbounds':[{'tag':'socks','listen':env_value('VPN_LOOPBACK_IP'),'port':env_port('VPN_TEST_POOL_PORT'),'protocol':'socks','settings':{'auth':'noauth'}},{'tag':'api','listen':env_value('VPN_LOOPBACK_IP'),'port':env_port('VPN_TEST_API_PORT'),'protocol':'tunnel','settings':{'address':env_value('VPN_LOOPBACK_IP')}}], 'outbounds':[{'tag':'blocked','protocol':'blackhole'}]+[{'tag':'fixture-'+name,'protocol':'vless','settings':{'address':env_value('VPN_LOOPBACK_IP'),'port':port,'id':uid,'encryption':'none'}} for name,port in [('a',env_port('VPN_TEST_EXIT_A_PORT')),('b',env_port('VPN_TEST_EXIT_B_PORT'))]], 'routing':{'rules':[{'type':'field','inboundTag':['api'],'outboundTag':'api'},{'type':'field','inboundTag':['socks'],'balancerTag':'fixture'}],'balancers':[{'tag':'fixture','selector':['fixture-'],'fallbackTag':'blocked','strategy':{'type':'roundRobin'}}]}, 'observatory':{'subjectSelector':['fixture-'],'probeUrl':'https://www.google.com/generate_204','probeInterval':'2s','enableConcurrency':True}})
+        def request():return subprocess.run(['curl','--fail','--silent','--show-error','--max-time','8','--proxy',env_expand('socks5h://${VPN_LOOPBACK_IP}:${VPN_TEST_POOL_PORT}'),'https://www.google.com/generate_204'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         try:
             wait_for(lambda x:'fixture-a' in x and 'fixture-b' in x)
             if request().returncode:raise RuntimeError('Initial pool check failed')

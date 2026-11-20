@@ -8,6 +8,9 @@ from unittest.mock import patch
 import sqlite3
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+from test_environment import configure
+configure()
+from vpn_env import env, port as env_port, expand, load_json
 import render
 from activate_balancer import change_template
 from migrate_direct_inbounds import add_routes, TARGETS
@@ -16,18 +19,39 @@ from priority_pool import build_priority_chain
 from ci_environment import outbound_paths
 
 class SafetyInvariants(unittest.TestCase):
+    def test_monitoring_covers_published_auto_and_telegram_access_without_replacing_old_probes(self):
+        inventory = load_json(Path(__file__).resolve().parents[1] / 'inventory/hosts.json')
+        _prometheus, _nodes, probes = render.prometheus_config(inventory)
+        frontend = [group for group in probes if group['labels'].get('service') == 'failover'
+                    and group['labels'].get('role') == 'frontend']
+        self.assertEqual(len(frontend), 1)
+        self.assertEqual(set(frontend[0]['targets']), {
+            expand('${VPN_LOOPBACK_IP}:${VPN_AUTO_REALITY_PORT}'),
+            expand('${VPN_LOOPBACK_IP}:${VPN_AUTO_TLS_PUBLIC_PORT}'),
+        })
+        entry = next(group for group in probes if group['labels'] == {'host': 'entry'})
+        expected_ports = [env_port(name) for name in (
+            'VPN_VLESS_NATIVE_PORT', 'VPN_COMPAT_VLESS_PORT', 'VPN_HTTP_LEGACY_PORT',
+            'VPN_MTPROTO_PORT', 'VPN_MTPROTO_PUBLIC_PORT', 'VPN_TELEGRAM_SOCKS_PORT',
+            'VPN_BALANCER_SOCKS_PORT')]
+        self.assertEqual(set(entry['targets']), {f"{env('VPN_LOOPBACK_IP')}:{value}" for value in expected_ports})
+        self.assertEqual(len(entry['targets']), len(set(entry['targets'])))
+        for role, variable in [('auth', 'VPN_VLESS_AUTH_PORT'), ('subscription', 'VPN_AUTO_SUBSCRIPTION_PORT')]:
+            group = next(group for group in probes if group['labels'].get('role') == role)
+            self.assertEqual(group['targets'], [f"{env('VPN_LOOPBACK_IP')}:{env_port(variable)}"])
+
     def test_private_reserves_follow_original_fallbacks_without_monitoring_nodes(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(render, 'ROOT', Path(tmp)):
             private = render.ROOT / '.local/outbounds'
             private.mkdir(parents=True)
             for name in ('main', 'original-backup', 'reserve'):
                 (private / (name + '.json')).write_text(json.dumps({
-                    'protocol': 'vless', 'settings': {'address': '203.0.113.1', 'id': name}}))
+                    'protocol': 'vless', 'settings': {'address': env('VPN_TEST_ADDRESS_A'), 'id': name}}))
             inv = {'entry': {'name': 'entry'},
-                   'nodes': [{'name': 'existing', 'address': '203.0.113.1', 'outbounds': [
+                   'nodes': [{'name': 'existing', 'address': env('VPN_TEST_ADDRESS_A'), 'outbounds': [
                        '.local/outbounds/main.json', '.local/outbounds/original-backup.json']}],
-                   'monitoring': {'node_port': 19100},
-                   'balancer': {'strategy': 'priority', 'socks_port': 11090, 'api_port': 11091,
+                   'monitoring': {'node_port': env_port('VPN_NODE_EXPORTER_PORT')},
+                   'balancer': {'strategy': 'priority', 'socks_port': env_port('VPN_BALANCER_SOCKS_PORT'), 'api_port': env_port('VPN_BALANCER_API_PORT'),
                                 'probe_interval': '10s', 'probe_url': 'https://example.com/',
                                 'priority_order': ['pool-existing-1']}}
             baseline = render.build_balancer(inv)
@@ -80,9 +104,9 @@ class SafetyInvariants(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(render,'ROOT',Path(tmp)):
                 for name in ['a','b']:
-                    (render.ROOT/(name+'.json')).write_text(json.dumps({'protocol':'vless','settings':{'address':'203.0.113.1','id':name}}))
+                    (render.ROOT/(name+'.json')).write_text(json.dumps({'protocol':'vless','settings':{'address':env('VPN_TEST_ADDRESS_A'),'id':name}}))
                 inv={'nodes':[{'name':'first','outbounds':['a.json','b.json']}],
-                     'balancer':{'strategy':'priority','socks_port':11090,'api_port':11091,'probe_interval':'10s','probe_url':'https://example.com/'}}
+                     'balancer':{'strategy':'priority','socks_port':env_port('VPN_BALANCER_SOCKS_PORT'),'api_port':env_port('VPN_BALANCER_API_PORT'),'probe_interval':'10s','probe_url':'https://example.com/'}}
                 old=render.build_balancer(inv)
                 inv['balancer']['priority_order']=['pool-first-1']
                 new=render.build_balancer(inv)
@@ -118,9 +142,9 @@ class SafetyInvariants(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT value FROM settings').fetchone()[0],'edited-by-owner')
 
     def test_legacy_migration_is_route_only_and_idempotent(self):
-        old={'inbounds':[{'port':36307,'settings':{'secretKey':'keep','peers':[{'publicKey':'keep'}]}}],
+        old={'inbounds':[{'port':env_port('VPN_WIREGUARD_LEGACY_PORT'),'settings':{'secretKey':'keep','peers':[{'publicKey':'keep'}]}}],
              'outbounds':[{'tag':'direct','protocol':'freedom'},
-                          {'tag':'vpn-egress-pool','protocol':'socks','settings':{'address':'127.0.0.1','port':11090}}],
+                          {'tag':'vpn-egress-pool','protocol':'socks','settings':{'address':env('VPN_LOOPBACK_IP'),'port':env_port('VPN_BALANCER_SOCKS_PORT')}}],
              'routing':{'domainStrategy':'AsIs','rules':[{'ip':['geoip:private'],'outboundTag':'blocked'}]}}
         snapshot=copy.deepcopy(old)
         new=add_routes(old)
@@ -130,29 +154,29 @@ class SafetyInvariants(unittest.TestCase):
         self.assertEqual(new['routing']['rules'][:1],old['routing']['rules'])
         self.assertEqual([r['inboundTag'][0] for r in new['routing']['rules'][1:]],list(TARGETS))
         self.assertEqual(add_routes(new),new)
-        old['routing']['rules'].append({'inboundTag':['in-36307-udp'],'network':'tcp','outboundTag':'direct'})
+        old['routing']['rules'].append({'inboundTag':[expand('in-${VPN_WIREGUARD_LEGACY_PORT}-udp')],'network':'tcp','outboundTag':'direct'})
         with self.assertRaises(ValueError):add_routes(old)
 
     def test_only_selected_routes_change(self):
-        old={'inbounds':[{'port':443,'settings':{'clients':[{'id':'existing-client'}]}}], 'outbounds':[{'tag':'legacy','protocol':'vless'}], 'routing':{'rules':[{'inboundTag':['api'],'outboundTag':'api'},{'ip':['geoip:private'],'outboundTag':'blocked'},{'inboundTag':['protected'],'outboundTag':'legacy'},{'inboundTag':['other'],'outboundTag':'direct'}]}, 'policy':{'keep':'unchanged'}}
+        old={'inbounds':[{'port':env_port('VPN_EXIT_TLS_PORT'),'settings':{'clients':[{'id':'existing-client'}]}}], 'outbounds':[{'tag':'legacy','protocol':'vless'}], 'routing':{'rules':[{'inboundTag':['api'],'outboundTag':'api'},{'ip':['geoip:private'],'outboundTag':'blocked'},{'inboundTag':['protected'],'outboundTag':'legacy'},{'inboundTag':['other'],'outboundTag':'direct'}]}, 'policy':{'keep':'unchanged'}}
         snapshot=copy.deepcopy(old)
-        new,count=change_template(old,['legacy'],11090)
+        new,count=change_template(old,['legacy'],env_port('VPN_BALANCER_SOCKS_PORT'))
         self.assertEqual(count,1)
         self.assertEqual(old,snapshot)
         self.assertEqual(new['inbounds'],old['inbounds'])
         self.assertEqual(new['routing']['rules'][:2],old['routing']['rules'][:2])
         self.assertEqual(new['routing']['rules'][3],old['routing']['rules'][3])
         self.assertEqual(new['policy'],old['policy'])
-        self.assertEqual(new['outbounds'][-1]['settings'],{'address':'127.0.0.1','port':11090})
+        self.assertEqual(new['outbounds'][-1]['settings'],{'address':env('VPN_LOOPBACK_IP'),'port':env_port('VPN_BALANCER_SOCKS_PORT')})
 
     def test_pool_is_fail_closed_and_loopback_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=render.ROOT;render.ROOT=Path(tmp)
             try:
-                (render.ROOT/'out.json').write_text(json.dumps({'protocol':'vless','settings':{'address':'203.0.113.1'}}))
-                inv={'nodes':[{'name':'example','outbounds':['out.json']}],'balancer':{'socks_port':11090,'api_port':11091,'strategy':'roundRobin','probe_interval':'10s','probe_url':'https://example.com/'}}
+                (render.ROOT/'out.json').write_text(json.dumps({'protocol':'vless','settings':{'address':env('VPN_TEST_ADDRESS_A')}}))
+                inv={'nodes':[{'name':'example','outbounds':['out.json']}],'balancer':{'socks_port':env_port('VPN_BALANCER_SOCKS_PORT'),'api_port':env_port('VPN_BALANCER_API_PORT'),'strategy':'roundRobin','probe_interval':'10s','probe_url':'https://example.com/'}}
                 config=render.build_balancer(inv)
-                self.assertTrue(all(i['listen']=='127.0.0.1' for i in config['inbounds']))
+                self.assertTrue(all(i['listen']==env('VPN_LOOPBACK_IP') for i in config['inbounds']))
                 self.assertEqual(config['outbounds'][0]['protocol'],'blackhole')
                 self.assertEqual(config['routing']['balancers'][0]['fallbackTag'],'blocked')
                 self.assertNotIn('freedom',[o['protocol'] for o in config['outbounds']])

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build and start a parallel VPN variant from local, already authorized outbounds."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import copy
 import ipaddress
@@ -22,8 +23,8 @@ OLD_POOL = Path('/etc/vpn-balancer/config.json')
 OLD_FRONTEND = Path('/etc/vpn-compatible-vless/config.json')
 XRAY = Path('/opt/vpn-balancer/xray')
 SING_BOX = Path('/opt/vpn-compatible-vless/sing-box')
-SOURCE_IP = '127.0.0.2'
-PORTS = {'pool': (11092, 11093), 'entry': (33174,)}
+SOURCE_IP = env_value('VPN_AUTO_SOURCE_IP')
+PORTS = {'pool': (env_port('VPN_FAILOVER_SOCKS_PORT'), env_port('VPN_AUTO_API_PORT')), 'entry': (env_port('VPN_AUTO_REALITY_PORT'),)}
 
 
 def private_outbound_file(item):
@@ -39,7 +40,7 @@ def build_pool(settings, main, old, private_folder=None):
     if set(ports) != {'pool-socks', 'api'}:
         raise ValueError('Unexpected source pool listeners')
     for tag, port in zip(('pool-socks', 'api'), PORTS['pool']):
-        ports[tag].update(listen='127.0.0.1', port=port)
+        ports[tag].update(listen=env_value('VPN_LOOPBACK_IP'), port=port)
     exports = {'main': main['outbounds'], 'legacy': old['outbounds']}
     outbounds, addresses, names = [], set(), []
     for item in settings['egresses']:
@@ -95,13 +96,13 @@ def build_entry(old):
     if len(config['inbounds']) != 1:
         raise ValueError('Expected one compatibility frontend')
     inbound = config['inbounds'][0]
-    if inbound['type'] != 'vless' or inbound['listen_port'] != 33173 or not inbound['tls']['reality']['enabled']:
+    if inbound['type'] != 'vless' or inbound['listen_port'] != env_port('VPN_COMPAT_VLESS_PORT') or not inbound['tls']['reality']['enabled']:
         raise ValueError('Unexpected compatibility frontend')
     if not config['outbounds'] or len(config['outbounds']) != len(inbound['users']):
         raise ValueError('Expected a distinct upstream for each account')
     inbound['listen_port'] = PORTS['entry'][0]
     for outbound in config['outbounds']:
-        if (outbound['type'], outbound['server'], outbound['server_port']) != ('vless', '127.0.0.1', 46738):
+        if (outbound['type'], outbound['server'], outbound['server_port']) != ('vless', env_value('VPN_LOOPBACK_IP'), env_port('VPN_VLESS_AUTH_PORT')):
             raise ValueError('Frontend must authenticate through the original VLESS inbound')
         if outbound.get('detour') or outbound.get('tls') or outbound.get('inet4_bind_address'):
             raise ValueError('Unexpected forwarded socket parameters')
@@ -172,7 +173,7 @@ def install(kind, config):
                            any(i.get('tag') == SNIFF_TAG for i in config['inbounds']) else ())
     for port in ports:
         with socket.socket() as sock:
-            sock.bind(('0.0.0.0' if kind == 'entry' else '127.0.0.1', port))
+            sock.bind((env_value('VPN_BIND_IP') if kind == 'entry' else env_value('VPN_LOOPBACK_IP'), port))
     ROOT.mkdir(mode=0o700, exist_ok=True)
     folder.parent.mkdir(mode=0o755, exist_ok=True)
     folder.parent.chmod(0o755)
@@ -199,7 +200,7 @@ def install(kind, config):
         for attempt in range(20):
             try:
                 for port in ports:
-                    with socket.create_connection(('127.0.0.1', port), timeout=1):
+                    with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=1):
                         pass
                 break
             except OSError:
@@ -228,7 +229,7 @@ def main():
     parser.add_argument('inventory', type=Path)
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
-    read = lambda path: json.loads(path.read_text())
+    read = load_network_json
     if args.kind == 'pool':
         config, names = build_pool(read(args.inventory)['failover'], read(MAIN), read(OLD_POOL),
                                    private_folder=args.inventory.parent/'outbounds')

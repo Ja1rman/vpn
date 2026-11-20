@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Add an existing encrypted outbound or provision a new standalone exit."""
 import argparse
+import copy
 import io
 import ipaddress
 import json
@@ -10,7 +11,54 @@ import re
 import shlex
 import subprocess
 import tarfile
-from vpnctl import ROOT, inventory, remote, deploy_node, update_pool, update_failover_pool
+import tempfile
+from vpn_env import configured_values, load_json, port
+from vpnctl import ROOT, remote, deploy_node, update_pool, update_failover_pool
+
+
+def inventory_addition(template, args, filename):
+    """Keep public inventory symbolic; actual endpoints belong to the private registry."""
+    if not re.fullmatch(r'[a-z][a-z0-9-]{0,40}', args.name):
+        raise ValueError('Invalid new host name')
+    prefix = 'VPN_HOST_' + args.name.upper().replace('-', '_')
+    address_name, port_name = prefix + '_ADDRESS', prefix + '_PORT'
+    host = {'name': args.name, 'address': '${' + address_name + '}', 'user': args.user}
+    candidate = copy.deepcopy(template)
+    if args.pool == 'auto':
+        host.update(source='file', file=filename.name)
+        candidate['failover']['egresses'].append(host)
+    else:
+        host.update(interface=args.interface, network_budget_mbps=args.network_budget_mbps,
+                    vpn_port='${' + port_name + '}', outbounds=[str(filename)])
+        candidate['nodes'].append(host)
+    return candidate, {address_name: args.address, port_name: args.port}
+
+
+def write_atomic(path, data, mode=0o600):
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with tempfile.NamedTemporaryFile(prefix='.' + path.name + '-', dir=path.parent, delete=False) as target:
+        temporary = Path(target.name)
+        try:
+            os.fchmod(target.fileno(), mode)
+            target.write(data)
+            target.flush()
+            os.fsync(target.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def private_network_candidate(path, updates):
+    if path.is_symlink():
+        raise ValueError('The private network registry must not be a symlink')
+    values = json.loads(path.read_text()) if path.exists() else {}
+    if not isinstance(values, dict):
+        raise ValueError('The private network registry must be a JSON object')
+    for name, value in updates.items():
+        if name in values and str(values[name]) != str(value):
+            raise ValueError('A different private endpoint already uses ' + name)
+    values.update(updates)
+    return (json.dumps(values, indent=2) + '\n').encode()
 
 def main():
     os.umask(0o077)
@@ -21,8 +69,9 @@ def main():
     p.add_argument('--network-budget-mbps',type=int)
     source=p.add_mutually_exclusive_group(required=True)
     source.add_argument('--outbound',type=Path);source.add_argument('--provision',action='store_true')
-    p.add_argument('--port',type=int,default=443);p.add_argument('--sni',default='api.github.com')
-    args=p.parse_args();inv=inventory()
+    p.add_argument('--port',type=int);p.add_argument('--sni',default='api.github.com')
+    args=p.parse_args();inv=load_json(ROOT/'inventory/hosts.json')
+    if args.port is None:args.port=port('VPN_EXIT_TLS_PORT')
     if not re.fullmatch('[a-z][a-z0-9-]{0,40}',args.name):p.error('Invalid name')
     if not re.fullmatch('[A-Za-z_][A-Za-z0-9_.-]{0,31}',args.user):p.error('Invalid SSH user')
     try:ip=ipaddress.ip_address(args.address)
@@ -42,20 +91,25 @@ def main():
         if args.provision and ip.version!=4:p.error('Automatic provisioning requires a public IPv4 address')
     if not re.fullmatch('[a-zA-Z0-9.-]+',args.sni):p.error('Invalid SNI hostname')
     current=(ROOT/'inventory/hosts.json').read_bytes()
+    template=json.loads(current)
+    registry=ROOT/'.local/network-env.json'
+    network_before=registry.read_bytes() if registry.exists() else None
     filename=Path('.local/outbounds')/(args.name+'-vless.json')
     local=ROOT/filename
     if args.pool=='auto':
         if local.is_symlink() or (local.exists() and (args.outbound is None or args.outbound.resolve()!=local.resolve())):
             p.error('Private outbound file exists; use it explicitly with --outbound to retry')
-        failover.append({'name':args.name,'address':args.address,'user':args.user,
-                         'source':'file','file':filename.name})
-    else:
-        inv['nodes'].append({'name':args.name,'address':args.address,'user':args.user,
-                             'interface':args.interface,'network_budget_mbps':args.network_budget_mbps,
-                             'vpn_port':args.port,'outbounds':[str(filename)]})
+    candidate,endpoint_updates=inventory_addition(template,args,filename)
+    configured=configured_values()
+    for name,value in endpoint_updates.items():
+        if name in configured and str(configured[name])!=str(value):
+            p.error('A different deployment endpoint already uses '+name)
+    network_after=private_network_candidate(registry,endpoint_updates)
+    inventory_after=(json.dumps(candidate,indent=2)+'\n').encode()
     # Register for SSH lookup, restoring inventory if provisioning or validation fails.
-    (ROOT/'inventory/hosts.json').write_text(json.dumps(inv,indent=2)+'\n')
     try:
+        write_atomic(registry,network_after)
+        write_atomic(ROOT/'inventory/hosts.json',inventory_after)
         if args.provision:
             runtime=ROOT/'.local/runtime';runtime.mkdir(exist_ok=True)
             if not (runtime/'xray').exists():
@@ -66,6 +120,10 @@ def main():
             with tarfile.open(fileobj=stream,mode='w:gz') as archive:
                 for name in ['xray','geoip.dat','geosite.dat']:archive.add(runtime/name,arcname=name)
                 archive.add(ROOT/'scripts/bootstrap_exit.py',arcname='bootstrap_exit.py')
+                archive.add(ROOT/'scripts/vpn_env.py',arcname='vpn_env.py')
+                network=json.dumps(configured_values()).encode()
+                info=tarfile.TarInfo('vpn.env.json');info.size=len(network);info.mode=0o600
+                archive.addfile(info,io.BytesIO(network))
             stage='/opt/vpn-infra/bootstrap'
             elevate='' if args.user=='root' else 'sudo -n '
             remote(args.name,f'{elevate}install -d -m 700 {stage} && {elevate}tar xzf - -C {stage}',stream.getvalue())
@@ -86,8 +144,13 @@ def main():
             deploy_node(args.name)
             update_pool()
     except Exception:
-        (ROOT/'inventory/hosts.json').write_bytes(current)
-        print('Inventory restored. Any newly provisioned exit is left intact for inspection; existing VPN routes are unchanged.')
+        inventory_path=ROOT/'inventory/hosts.json'
+        if inventory_path.read_bytes()==inventory_after:
+            write_atomic(inventory_path,current)
+        if registry.exists() and registry.read_bytes()==network_after:
+            if network_before is None:registry.unlink()
+            else:write_atomic(registry,network_before)
+        print('Local registration restored. Any newly provisioned exit is left intact for inspection; existing VPN routes are unchanged.')
         raise
     print('Host added:',args.name)
     if args.pool=='legacy':

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Apply only outbound/routing changes through x-ui, with detached rollback."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import copy
 from datetime import datetime, timezone
 import json
@@ -30,7 +31,7 @@ def probe(proxy, account=None):
 
 def change_template(old, legacy_tags, port):
     new=copy.deepcopy(old)
-    outbound={'tag':'vpn-egress-pool','protocol':'socks','settings':{'address':'127.0.0.1','port':port}}
+    outbound={'tag':'vpn-egress-pool','protocol':'socks','settings':{'address':env_value('VPN_LOOPBACK_IP'),'port':port}}
     existing=[o for o in new['outbounds'] if o['tag']=='vpn-egress-pool']
     if existing and existing[0]!=outbound:raise ValueError('Conflicting vpn-egress-pool outbound')
     if not existing:new['outbounds'].append(outbound)
@@ -60,7 +61,7 @@ def main():
     p=Panel()
     old=p.template();running=json.loads(CONFIG.read_text())
     legacy=[o['tag'] for o in old['outbounds'] if o.get('protocol') in {'vless','hysteria'}]
-    new,count=change_template(old,legacy,11090)
+    new,count=change_template(old,legacy,env_port('VPN_BALANCER_SOCKS_PORT'))
     if count==0:
         p.close()
         print('No legacy routes to change; current pool configuration is retained');return
@@ -75,7 +76,7 @@ def main():
     env=dict(os.environ,XRAY_LOCATION_ASSET='/usr/local/x-ui/bin')
     subprocess.run([XRAY,'run','-test','-config',str(candidate_path)],env=env,check=True)
     before=xray_pids()
-    expected=probe('socks5h://127.0.0.1:11090')
+    expected=probe(env_expand('socks5h://${VPN_LOOPBACK_IP}:${VPN_BALANCER_SOCKS_PORT}'))
     if not expected:raise RuntimeError('Pool egress check failed')
     log=(folder/'watchdog.log').open('ab')
     subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'watchdog',str(folder)],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
@@ -89,7 +90,7 @@ def main():
         # Test the existing authenticated HTTP inbound, including the main core.
         http=next(i for i in updated['inbounds'] if i['protocol']=='http' and any(i['tag'] in r.get('inboundTag',[]) and r.get('outboundTag')=='vpn-egress-pool' for r in updated['routing']['rules']))
         account=next(iter(http['settings'].get('accounts',[])),None)
-        observed=probe('http://127.0.0.1:'+str(http['port']),account)
+        observed=probe(env_expand('http://${VPN_LOOPBACK_IP}:')+str(http['port']),account)
         if observed!=expected:raise RuntimeError('Unexpected main VPN exit address')
         (folder/'committed').write_text('Validated; main Xray PID unchanged; inbounds unchanged\n')
         print(json.dumps({'changed_routes':count,'main_xray_pids':after,'inbounds_unchanged':True,'exit_ip':observed,'rollback_directory':str(folder)}))

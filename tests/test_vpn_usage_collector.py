@@ -7,6 +7,9 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from test_environment import configure
+configure()
+from vpn_env import env, port as env_port, expand
 from vpn_usage_collector import collect, read_mapping
 
 

@@ -48,8 +48,11 @@ jobs:
           VPN_SSH_KNOWN_HOSTS: ${{ secrets.VPN_SSH_KNOWN_HOSTS }}
           VPN_OUTBOUNDS_JSON: ${{ secrets.VPN_OUTBOUNDS_JSON }}
           VPN_MONITORING_TLS_JSON: ${{ secrets.VPN_MONITORING_TLS_JSON }}
+          VPN_ENDPOINTS_JSON: ${{ secrets.VPN_ENDPOINTS_JSON }}
           VPN_ALERTMANAGER_CONFIG: ${{ secrets.VPN_ALERTMANAGER_CONFIG }}
           VPN_MTPROTO_SECRET: ${{ secrets.VPN_MTPROTO_SECRET }}
+          VPN_TELEGRAM_SOCKS_USERNAME: ${{ secrets.VPN_TELEGRAM_SOCKS_USERNAME }}
+          VPN_TELEGRAM_SOCKS_PASSWORD: ${{ secrets.VPN_TELEGRAM_SOCKS_PASSWORD }}
         run: python3 scripts/ci_deploy.py
       - name: Remove temporary credentials
         if: always()

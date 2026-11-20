@@ -14,6 +14,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from test_environment import configure
+configure()
+from vpn_env import env, port as env_port, expand
 import install_mtproto as installer
 
 
@@ -25,9 +28,9 @@ def credentials(key='11'):
 class MtprotoInstallationTests(unittest.TestCase):
     def test_config_uses_one_auto_pool_without_direct_fallback(self):
         config = tomllib.loads(installer.config_text(credentials()))
-        self.assertEqual(config['network']['proxies'], ['socks5://127.0.0.1:11092'])
-        self.assertEqual(config['bind-to'], '0.0.0.0:8443')
-        self.assertEqual(config['public-ipv4'], '212.22.70.156')
+        self.assertEqual(config['network']['proxies'], [expand('socks5://${VPN_LOOPBACK_IP}:${VPN_FAILOVER_SOCKS_PORT}')])
+        self.assertEqual(config['bind-to'], expand('${VPN_BIND_IP}:${VPN_MTPROTO_PORT}'))
+        self.assertEqual(config['public-ipv4'], env('VPN_ENTRY_ADDRESS'))
         self.assertEqual(config['prefer-ip'], 'only-ipv4')
         self.assertFalse(config['debug'])
         self.assertIn('User=vpn-mtproto\n', installer.unit_text())
@@ -36,7 +39,7 @@ class MtprotoInstallationTests(unittest.TestCase):
     def test_secrets_allow_access_metadata_and_reject_wrong_domain(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'access.json'
-            value = dict(credentials(), server='212.22.70.156', port=8443, links={'telegram': 'private'})
+            value = dict(credentials(), server=env('VPN_ENTRY_ADDRESS'), port=env_port('VPN_MTPROTO_PORT'), links={'telegram': 'private'})
             path.write_text(json.dumps(value))
             path.chmod(0o600)
             self.assertEqual(installer.read_secrets(path)['secret'], value['secret'])

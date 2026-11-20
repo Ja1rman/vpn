@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-"""Add one source-bound route to main Xray without reloading x-ui or VPN.
-
-Deploy only after the second SOCKS pool is running and before publishing or
-starting its frontend. The existing 46738 entry and all old routes are retained.
-"""
+'Add one source-bound route to main Xray without reloading x-ui or VPN.\n\nDeploy only after the second SOCKS pool is running and before publishing or\nstarting its frontend. The existing ${VPN_VLESS_AUTH_PORT} entry and all old routes are retained.\n'
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import copy
 from datetime import datetime, timezone
@@ -27,16 +24,16 @@ CONFIG = XRAY.with_name('config.json')
 DB = Path('/etc/x-ui/x-ui.db')
 BACKUPS = Path('/var/backups/vpn-infra')
 LOCK = Path('/run/lock/vpn-failover-variant.lock')
-API = 62789
-VARIANT_API = 11093
-INBOUND = 'in-46738-tcp'
-PORT = 46738
-SOURCE = '127.0.0.2'
+API = env_port('VPN_XUI_API_PORT')
+VARIANT_API = env_port('VPN_AUTO_API_PORT')
+INBOUND = env_expand('in-${VPN_VLESS_AUTH_PORT}-tcp')
+PORT = env_port('VPN_VLESS_AUTH_PORT')
+SOURCE = env_value('VPN_AUTO_SOURCE_IP')
 LEGACY = 'vpn-egress-pool'
 OUT = 'vpn-failover-egress-pool'
-RULE = 'vpn-failover-source-127-0-0-2'
+RULE = 'vpn-failover-source-' + env_value('VPN_AUTO_SOURCE_IP').replace('.', '-')
 VARIANT_OUT = {'tag': OUT, 'protocol': 'socks',
-               'settings': {'address': '127.0.0.1', 'port': 11092}}
+               'settings': {'address': env_value('VPN_LOOPBACK_IP'), 'port': env_port('VPN_FAILOVER_SOCKS_PORT')}}
 VARIANT_RULE = {'type': 'field', 'ruleTag': RULE, 'inboundTag': [INBOUND],
                 'source': [SOURCE + '/32'], 'outboundTag': OUT}
 OLD_RULE = {'type': 'field', 'inboundTag': [INBOUND], 'outboundTag': LEGACY}
@@ -79,7 +76,7 @@ def transform(config):
     variant_rules = [idx for idx, r in enumerate(rules)
                      if r.get('ruleTag') == RULE or r.get('outboundTag') == OUT]
     expected_old = {'tag': LEGACY, 'protocol': 'socks',
-                    'settings': {'address': '127.0.0.1', 'port': 11090}}
+                    'settings': {'address': env_value('VPN_LOOPBACK_IP'), 'port': env_port('VPN_BALANCER_SOCKS_PORT')}}
     outbounds = config['outbounds']
     tags = [o['tag'] for o in outbounds]
     need(len(tags) == len(set(tags)), 'Duplicate existing outbound tags')
@@ -110,7 +107,7 @@ def candidates(runtime, template):
     stream = inbound['streamSettings']
     need(stream.get('security', 'none') == 'none' and stream.get('network') in ('tcp', 'raw')
          and inbound['settings'].get('decryption') == 'none'
-         and inbound.get('listen') in ('0.0.0.0', '127.0.0.1'), 'Legacy VLESS transport is unexpected')
+         and inbound.get('listen') in (env_value('VPN_BIND_IP'), env_value('VPN_LOOPBACK_IP')), 'Legacy VLESS transport is unexpected')
     need({'HandlerService', 'RoutingService'} <= set(runtime.get('api', {}).get('services', [])),
          'Main loopback API is missing required services')
     new_runtime, new_template = transform(runtime), transform(template)
@@ -128,7 +125,7 @@ def command(args):
 
 
 def api(cmd, *args, port=None):
-    return command([str(XRAY), 'api', cmd, f'--server=127.0.0.1:{port or API}', '--timeout=6', *map(str, args)])
+    return command([str(XRAY), 'api', cmd, env_expand(f'--server=${{VPN_LOOPBACK_IP}}:{port or API}'), '--timeout=6', *map(str, args)])
 
 
 def live_rules():
@@ -219,7 +216,7 @@ def read_exact(stream, count):
 
 
 def vless_request(uid, source, command_id, port, address, payload):
-    sock = socket.create_connection(('127.0.0.1', PORT), timeout=9, source_address=(source, 0))
+    sock = socket.create_connection((env_value('VPN_LOOPBACK_IP'), PORT), timeout=9, source_address=(source, 0))
     try:
         header = b'\0' + uid.bytes + struct.pack('!BBH', 0, command_id, port) + address
         sock.sendall(header + payload)
@@ -248,14 +245,14 @@ def vless_request(uid, source, command_id, port, address, payload):
 def check_tcp(uid, source, ip):
     domain = b'api.ipify.org'
     addr = bytes((2, len(domain))) + domain
-    raw = vless_request(uid, source, 1, 80, addr,
+    raw = vless_request(uid, source, 1, env_port('VPN_WEB_HTTP_PORT'), addr,
                         b'GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n')
     need(ipaddress.ip_address(raw.decode().strip()) == ip, 'Unexpected egress address through VLESS canary')
 
 
 def check_udp(uid, source):
     query = b'\xa9\x2e\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01'
-    reply = vless_request(uid, source, 2, 53, b'\x01\x01\x01\x01\x01',
+    reply = vless_request(uid, source, 2, env_port('VPN_DNS_PORT'), b'\x01' + socket.inet_aton(env_value('VPN_DNS_ADDRESS')),
                           struct.pack('!H', len(query)) + query)
     need(len(reply) >= 12 and reply[:2] == query[:2] and bool(reply[2] & 128),
          'VLESS UDP canary received no valid DNS response')
@@ -309,7 +306,7 @@ def apply(legacy_ip, variant_ip):
     need(OUT not in old_out, 'Variant outbound tag already exists in live Xray')
     uid = next((uuid.UUID(c['id']) for c in inbound['settings']['clients'] if not c.get('flow')), None)
     need(uid is not None, 'No plain VLESS canary user is present')
-    check_tcp(uid, '127.0.0.1', legacy_ip)
+    check_tcp(uid, env_value('VPN_LOOPBACK_IP'), legacy_ip)
     check_tcp(uid, SOURCE, legacy_ip)
     # Before the second frontend is enabled this counter must only see our variant probe.
     pool_uplink()
@@ -336,8 +333,8 @@ def apply(legacy_ip, variant_ip):
         api('adrules', folder / 'routing-after.json')
         need(live_rules() == rule_projection(new_runtime), 'Live rule order was not updated')
         pre = pool_uplink()
-        check_tcp(uid, '127.0.0.1', legacy_ip)
-        check_udp(uid, '127.0.0.1')
+        check_tcp(uid, env_value('VPN_LOOPBACK_IP'), legacy_ip)
+        check_udp(uid, env_value('VPN_LOOPBACK_IP'))
         need(pool_uplink() == pre, 'Legacy VLESS touched the variant pool')
         check_tcp(uid, SOURCE, variant_ip)
         check_udp(uid, SOURCE)

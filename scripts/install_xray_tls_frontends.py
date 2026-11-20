@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Add trusted-TLS wrappers to existing VLESS entries without changing Xray."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import argparse
 import json
 import os
@@ -16,30 +17,30 @@ import time
 from install_auto_tls_frontend import (
     ADDRESS, CERT_DIRECTORY, CERT_IN_CONTAINER, DOCKER, DOCKER_HOST, IMAGE,
     MAIN_CONFIG, MAIN_XRAY, certificate_account, command, require,
+    environment_payload, refresh_runtime_helpers, running_identity,
     stream_module, validate_certificate, write_new,
 )
 
 NAME = 'vpn-xray-tls-frontends'
 UNIT = NAME + '.service'
 LABEL = 'org.vpn-infra.role=' + NAME
-PORTS = {33176: 46738, 33177: 22799, 33178: 16715, 33179: 18398}
-SOURCE = '127.0.0.1'
+PORTS = {env_port('VPN_STANDARD_TLS_PORT'): env_port('VPN_VLESS_AUTH_PORT'), env_port('VPN_PRIMARY_TLS_PORT'): env_port('VPN_PRIMARY_VLESS_PORT'), env_port('VPN_NL_RELAY_TLS_PORT'): env_port('VPN_NL_RELAY_VLESS_PORT'), env_port('VPN_THIRD_TLS_PORT'): env_port('VPN_THIRD_VLESS_PORT')}
+SOURCE = env_value('VPN_LOOPBACK_IP')
 CONFIG = Path('/etc') / NAME
 RUNTIME = Path('/opt') / NAME
 APPLICATION = RUNTIME / 'install_xray_tls_frontends.py'
 SHARED_HELPER = RUNTIME / 'install_auto_tls_frontend.py'
 UNIT_PATH = Path('/etc/systemd/system') / UNIT
 CIDFILE = Path('/run') / NAME / 'container.cid'
+ENV_NAMES = ('VPN_STANDARD_TLS_PORT', 'VPN_PRIMARY_TLS_PORT', 'VPN_PRIMARY_VLESS_PORT',
+             'VPN_NL_RELAY_TLS_PORT', 'VPN_NL_RELAY_VLESS_PORT',
+             'VPN_THIRD_TLS_PORT', 'VPN_THIRD_VLESS_PORT')
 
 
 def nginx_config(load_module='', *, ports=None, certificate=CERT_IN_CONTAINER):
     servers = []
     for public, backend in (PORTS if ports is None else ports).items():
-        servers.append(f"""    server {{
-        listen 0.0.0.0:{public} ssl;
-        proxy_pass 127.0.0.1:{backend};
-        proxy_bind {SOURCE};
-    }}""")
+        servers.append(env_expand(f'    server {{\n        listen ${{VPN_BIND_IP}}:{public} ssl;\n        proxy_pass ${{VPN_LOOPBACK_IP}}:{backend};\n        proxy_bind {SOURCE};\n    }}'))
     return f"""{load_module}worker_processes 1;
 pid /tmp/nginx.pid;
 lock_file /tmp/vpn-xray-nginx.lock;
@@ -114,7 +115,7 @@ def validate_backends(config):
         transport = stream.get('rawSettings') or stream.get('tcpSettings') or {}
         require(inbound.get('protocol') == 'vless' and inbound.get('port') == backend
                 and inbound.get('settings', {}).get('decryption') == 'none'
-                and inbound.get('listen') in ('', '127.0.0.1', '0.0.0.0', '::')
+                and inbound.get('listen') in ('', env_value('VPN_LOOPBACK_IP'), env_value('VPN_BIND_IP'), env_value('VPN_BIND_IPV6_IP'))
                 and stream.get('network') in ('raw', 'tcp') and stream.get('security', 'none') == 'none'
                 and transport.get('header', {}).get('type', 'none') == 'none'
                 and not transport.get('acceptProxyProtocol')
@@ -124,7 +125,7 @@ def validate_backends(config):
         routes = [r for r in rules if r.get('inboundTag') == [tag]
                   and set(r) <= {'type', 'inboundTag', 'outboundTag'}]
         require(len(routes) == 1 and routes[0].get('outboundTag'), 'A backend has no unique existing catchall route')
-    require(next(r['outboundTag'] for r in rules if r.get('inboundTag') == ['in-46738-tcp']
+    require(next(r['outboundTag'] for r in rules if r.get('inboundTag') == [env_expand('in-${VPN_VLESS_AUTH_PORT}-tcp')]
                  and set(r) <= {'type', 'inboundTag', 'outboundTag'}) == 'vpn-egress-pool',
             'The standard entry no longer uses the legacy pool')
     return [(r.get('outboundTag', ''), r.get('ruleTag', '')) for r in rules]
@@ -132,12 +133,12 @@ def validate_backends(config):
 
 def check_backends():
     expected = validate_backends(json.loads(MAIN_CONFIG.read_bytes()))
-    live = json.loads(command(str(MAIN_XRAY), 'api', 'lsrules', '--server=127.0.0.1:62789'))
+    live = json.loads(command(str(MAIN_XRAY), 'api', 'lsrules', env_expand('--server=${VPN_LOOPBACK_IP}:${VPN_XUI_API_PORT}')))
     require([(r.get('tag', ''), r.get('ruleTag', '')) for r in live['rules']] == expected,
             'Live main routing differs from its saved configuration')
     for backend in PORTS.values():
         try:
-            with socket.create_connection(('127.0.0.1', backend), timeout=2, source_address=(SOURCE, 0)):
+            with socket.create_connection((env_value('VPN_LOOPBACK_IP'), backend), timeout=2, source_address=(SOURCE, 0)):
                 pass
         except OSError:
             raise RuntimeError('An existing VLESS backend is unreachable on loopback') from None
@@ -148,7 +149,7 @@ def verify_listeners():
     for port in PORTS:
         for _ in range(24):
             try:
-                with socket.create_connection(('127.0.0.1', port), timeout=1.5) as raw:
+                with socket.create_connection((env_value('VPN_LOOPBACK_IP'), port), timeout=1.5) as raw:
                     with trust.wrap_socket(raw, server_hostname=ADDRESS):
                         break
             except OSError:
@@ -185,20 +186,17 @@ def install():
                       '--cap-drop=ALL', '--user', f'{uid}:{gid}', '--entrypoint', '/usr/sbin/nginx', IMAGE,
                       '-V', include_stderr=True).decode()
     helper = Path(__file__).resolve().with_name('install_auto_tls_frontend.py')
-    payload = {CONFIG / 'nginx.conf': (nginx_config(stream_module(version)).encode(), 0o644),
-               APPLICATION: (Path(__file__).read_bytes(), 0o600),
-               SHARED_HELPER: (helper.read_bytes(), 0o600), UNIT_PATH: (unit_text(uid, gid).encode(), 0o644)}
+    frozen = {CONFIG / 'nginx.conf': (nginx_config(stream_module(version)).encode(), 0o644),
+              UNIT_PATH: (unit_text(uid, gid).encode(), 0o644)}
+    helpers = {APPLICATION: (Path(__file__).read_bytes(), 0o600),
+               SHARED_HELPER: (helper.read_bytes(), 0o600), **environment_payload(RUNTIME, ENV_NAMES)}
+    payload = {**frozen, **helpers}
     paths = [CONFIG, RUNTIME, *payload]
     if any(os.path.lexists(p) for p in paths):
-        require(not any(p.is_symlink() for p in paths) and CONFIG.is_dir() and RUNTIME.is_dir()
-                and all(p.stat().st_uid == 0 and stat.S_IMODE(p.stat().st_mode) == 0o700 for p in (CONFIG, RUNTIME))
-                and all(p.is_file() and p.read_bytes() == data and p.stat().st_uid == 0
-                        and stat.S_IMODE(p.stat().st_mode) == mode for p, (data, mode) in payload.items()),
-                'A different TLS frontend installation already exists; no files changed')
-        command('systemctl', 'is-active', '--quiet', UNIT)
-        require(CIDFILE.is_file() and inspect_owned(CIDFILE.read_text().strip()), 'TLS container is not running')
-        verify_listeners()
-        print(UNIT + ' already active; no changes applied')
+        require(APPLICATION.is_file() and SHARED_HELPER.is_file(), 'Existing TLS frontend helpers are missing')
+        changed = refresh_runtime_helpers(RUNTIME, CONFIG, frozen, helpers,
+                                          lambda: running_identity(UNIT, CIDFILE, NAME), verify_listeners)
+        print(UNIT + (' private helpers refreshed; service unchanged' if changed else ' already active; no changes applied'))
         return
     require(command('systemctl', 'show', '--property=LoadState', '--value', UNIT).strip() == b'not-found',
             'The TLS frontend service name is already in use')
@@ -209,7 +207,7 @@ def install():
         for port in PORTS:
             sock = socket.socket()
             with_ports.append(sock)
-            sock.bind(('0.0.0.0', port))
+            sock.bind((env_value('VPN_BIND_IP'), port))
     finally:
         for sock in with_ports:
             sock.close()

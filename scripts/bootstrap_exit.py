@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Provision a NEW standalone VLESS/REALITY exit. Does not modify existing x-ui."""
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 import json
 import os
 from pathlib import Path
@@ -31,7 +32,7 @@ def main():
     stage=Path(sys.argv[1]);address=sys.argv[2];port=int(sys.argv[3]);sni=sys.argv[4]
     refuse_existing_exit()
     check=socket.socket()
-    try:check.bind(('0.0.0.0',port))
+    try:check.bind((env_value('VPN_BIND_IP'),port))
     finally:check.close()
     runtime=Path('/opt/vpn-exit');dest=Path('/etc/vpn-exit');unit=Path('/etc/systemd/system/vpn-exit.service')
     created_files=[];created_dirs=[];unit_started=False
@@ -81,7 +82,7 @@ def main():
     print(json.dumps({'protocol':'vless','settings':{'address':address,'port':port,'id':uid,'encryption':'none','flow':'xtls-rprx-vision'},'streamSettings':{'network':'tcp','security':'reality','realitySettings':{'serverName':sni,'fingerprint':'chrome','publicKey':public,'shortId':short,'spiderX':'/'}}}))
 
 def configure_exit(runtime,dest,unit,address,port,sni,private,uid,short,created_files,created_dirs):
-    config={'log':{'loglevel':'warning'},'inbounds':[{'tag':'vpn-exit','listen':'0.0.0.0','port':port,'protocol':'vless','settings':{'clients':[{'id':uid,'flow':'xtls-rprx-vision'}],'decryption':'none'},'streamSettings':{'network':'tcp','security':'reality','realitySettings':{'show':False,'target':sni+':443','serverNames':[sni],'privateKey':private,'shortIds':[short]}}}], 'outbounds':[{'tag':'direct','protocol':'freedom','settings':{'finalRules':[{'action':'block','ip':['geoip:private']},{'action':'allow'}]}},{'tag':'blocked','protocol':'blackhole'}], 'routing':{'rules':[{'type':'field','ip':['geoip:private'],'outboundTag':'blocked'},{'type':'field','protocol':['bittorrent'],'outboundTag':'blocked'}]}}
+    config={'log':{'loglevel':'warning'},'inbounds':[{'tag':'vpn-exit','listen':env_value('VPN_BIND_IP'),'port':port,'protocol':'vless','settings':{'clients':[{'id':uid,'flow':'xtls-rprx-vision'}],'decryption':'none'},'streamSettings':{'network':'tcp','security':'reality','realitySettings':{'show':False,'target':sni+env_expand(':${VPN_WEB_HTTPS_PORT}'),'serverNames':[sni],'privateKey':private,'shortIds':[short]}}}], 'outbounds':[{'tag':'direct','protocol':'freedom','settings':{'finalRules':[{'action':'block','ip':['geoip:private']},{'action':'allow'}]}},{'tag':'blocked','protocol':'blackhole'}], 'routing':{'rules':[{'type':'field','ip':['geoip:private'],'outboundTag':'blocked'},{'type':'field','protocol':['bittorrent'],'outboundTag':'blocked'}]}}
     run('groupadd','--system','vpn-exit',stdout=subprocess.DEVNULL) if subprocess.run(['getent','group','vpn-exit'],stdout=subprocess.DEVNULL).returncode else None
     if subprocess.run(['id','vpn-exit'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:run('useradd','--system','--gid','vpn-exit','--no-create-home','--shell','/usr/sbin/nologin','vpn-exit')
     dest.mkdir(mode=0o750);created_dirs.append(dest);dest.chmod(0o750)

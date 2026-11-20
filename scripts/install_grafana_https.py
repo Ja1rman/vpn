@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install only the independent Grafana HTTPS proxy; preserve port 80 and VPN."""
+"""Install only the independent Grafana HTTPS proxy; preserve HTTP and VPN."""
 import argparse
 from contextlib import closing
 import hashlib
@@ -14,6 +14,8 @@ import ssl
 import stat
 import subprocess
 import time
+import vpn_env
+from vpn_env import env, expand, port
 
 
 NAME = 'vpn-grafana-https'
@@ -22,11 +24,15 @@ UNIT = NAME + '-certificate.service'
 ROOT = Path('/etc') / NAME
 CONFIG = ROOT / 'nginx.conf'
 INSTALLER = ROOT / 'install_grafana_https.py'
+ENV_MODULE = ROOT / 'vpn_env.py'
+ENV_CONFIG = ROOT / 'vpn.env.json'
 TLS_DIR = Path('/etc/vpn-failover-subscription')
 TLS_BUNDLE = TLS_DIR / 'tls.pem'
 UNIT_DIR = Path('/etc/systemd/system')
 IMAGE = 'nginx:1.30.6-alpine@sha256:970364228b1e4f932abc22d321932816782cca8a20b85a77552a7cfe9acfb3b5'
 LABEL = 'org.vpn-infra.grafana-https'
+ENV_NAMES = ('VPN_BIND_IP', 'VPN_LOOPBACK_IP', 'VPN_ENTRY_ADDRESS',
+             'VPN_MONITORING_HTTP_PORT', 'VPN_MONITORING_HTTPS_PORT', 'VPN_GRAFANA_PORT')
 
 
 def command(*args, required=True):
@@ -36,11 +42,42 @@ def command(*args, required=True):
     return result
 
 
+def environment_values():
+    return {name: port(name) if name.endswith('_PORT') else str(ipaddress.IPv4Address(env(name)))
+            for name in ENV_NAMES}
+
+
+def origin_aliases(address, scheme):
+    address = str(ipaddress.IPv4Address(address))
+    listen_port = port('VPN_MONITORING_HTTPS_PORT' if scheme == 'https' else 'VPN_MONITORING_HTTP_PORT')
+    origins = [f'{scheme}://{address}:{listen_port}']
+    # A protocol's implicit authority is equivalent only at its standard port.
+    protocol_port = http.client.HTTPS_PORT if scheme == 'https' else http.client.HTTP_PORT
+    if listen_port == protocol_port:
+        origins.append(f'{scheme}://{address}')
+    return origins
+
+
 def render(template, address):
-    text = template.read_text()
-    if '__GRAFANA_PUBLIC_IP__' not in text:
-        raise ValueError('Missing public IP placeholder in nginx template')
-    return text.replace('__GRAFANA_PUBLIC_IP__', str(ipaddress.IPv4Address(address)))
+    environment_values()
+    address = str(ipaddress.IPv4Address(address))
+    if address != str(ipaddress.IPv4Address(env('VPN_ENTRY_ADDRESS'))):
+        raise ValueError('The public address must match VPN_ENTRY_ADDRESS')
+    candidate = expand(template.read_text())
+    if f'server_name {address};' not in candidate:
+        raise ValueError('Missing configured public server name in nginx template')
+    http_origins = origin_aliases(address, 'http')
+    https_origin = origin_aliases(address, 'https')[0]
+    # Accept the existing Grafana canonical origin as well as explicit-port URLs.
+    # This does not require changing or restarting its separate HTTP service.
+    redirect = f'proxy_redirect {http_origins[0]}/grafana/ {https_origin}/grafana/;'
+    replacement = f"sub_filter '{http_origins[0]}/grafana/' '{https_origin}/grafana/';"
+    for alias in http_origins[1:]:
+        candidate = candidate.replace(redirect, redirect + '\n      '
+                                      + f'proxy_redirect {alias}/grafana/ {https_origin}/grafana/;')
+        candidate = candidate.replace(replacement, replacement + '\n      '
+                                      + f"sub_filter '{alias}/grafana/' '{https_origin}/grafana/';")
+    return candidate
 
 
 def source_fingerprint(address):
@@ -57,7 +94,7 @@ def source_fingerprint(address):
 
 
 def local_tls(address):
-    raw = socket.create_connection(('127.0.0.1', 443), timeout=5)
+    raw = socket.create_connection((env('VPN_LOOPBACK_IP'), port('VPN_MONITORING_HTTPS_PORT')), timeout=5)
     try:
         return ssl.create_default_context().wrap_socket(raw, server_hostname=str(address))
     except BaseException:
@@ -72,9 +109,10 @@ def served_fingerprint(address):
 
 def get(address, path):
     # Connect to local nginx, but verify the exact public IP SAN and retain its Host.
-    with closing(http.client.HTTPConnection(str(address), 443, timeout=5)) as connection:
+    listen_port = port('VPN_MONITORING_HTTPS_PORT')
+    with closing(http.client.HTTPConnection(str(address), listen_port, timeout=5)) as connection:
         connection.sock = local_tls(address)
-        connection.request('GET', path, headers={'Host': str(address), 'Connection': 'close'})
+        connection.request('GET', path, headers={'Host': f'{address}:{listen_port}', 'Connection': 'close'})
         response = connection.getresponse()
         return response.status, response.getheader('Location'), response.read(1024 * 1024)
 
@@ -86,7 +124,9 @@ def health(address, expected):
     if status != 302 or location != '/grafana/':
         raise RuntimeError('Grafana HTTPS root redirect failed')
     status, _, body = get(address, '/grafana/login')
-    if status != 200 or f'https://{address}/grafana/'.encode() not in body or f'http://{address}/grafana/'.encode() in body:
+    https_urls = [(origin + '/grafana/').encode() for origin in origin_aliases(address, 'https')]
+    http_urls = [(origin + '/grafana/').encode() for origin in origin_aliases(address, 'http')]
+    if status != 200 or not any(url in body for url in https_urls) or any(url in body for url in http_urls):
         raise RuntimeError('Grafana login HTML does not use the HTTPS origin')
     status, _, body = get(address, '/grafana/api/health')
     if status != 200 or json.loads(body).get('database') != 'ok':
@@ -118,7 +158,7 @@ def install(template, address):
         if state != b'not-found':
             raise RuntimeError('A Grafana HTTPS certificate unit already exists')
     with socket.socket() as check:
-        check.bind(('0.0.0.0', 443))
+        check.bind((env('VPN_BIND_IP'), port('VPN_MONITORING_HTTPS_PORT')))
     candidate = render(template, address)
     expected = source_fingerprint(address)
     own = secrets.token_hex(16)
@@ -128,7 +168,10 @@ def install(template, address):
         ROOT.mkdir(mode=0o700)
         mkdir = True
         for path, data, mode in ((CONFIG, candidate.encode(), 0o640),
-                                 (INSTALLER, Path(__file__).read_bytes(), 0o700)):
+                                 (INSTALLER, Path(__file__).read_bytes(), 0o700),
+                                 (ENV_MODULE, Path(vpn_env.__file__).read_bytes(), 0o600),
+                                 (ENV_CONFIG, (json.dumps(environment_values(), indent=2)
+                                               + '\n').encode(), 0o600)):
             with path.open('xb') as stream:
                 files.append(path)
                 stream.write(data)
@@ -174,7 +217,8 @@ def install(template, address):
         if any(path.parent == UNIT_DIR for path in files):
             command('systemctl', 'daemon-reload', required=False)
         raise
-    return {'grafana_https': 'installed', 'trusted_tls_and_login': True, 'port': 443}
+    return {'grafana_https': 'installed', 'trusted_tls_and_login': True,
+            'port': port('VPN_MONITORING_HTTPS_PORT')}
 
 
 def sync(address):

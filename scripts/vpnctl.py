@@ -9,11 +9,13 @@ from pathlib import Path
 import shlex
 import subprocess
 import tarfile
+from vpn_env import configured_values, env, expand, load_json, port
+from vpn_env import env as env_value, port as env_port, expand as env_expand, load_json as load_network_json
 
 ROOT=Path(__file__).resolve().parents[1]
 INVENTORY=ROOT/'inventory/hosts.json'
 
-def inventory():return json.loads(INVENTORY.read_text())
+def inventory():return load_json(INVENTORY)
 
 def node(name):
     inv=inventory()
@@ -37,6 +39,11 @@ def upload(name,folder,extras=()):
     with tarfile.open(fileobj=stream,mode='w:gz') as archive:
         archive.add(folder,arcname='payload')
         for filename in extras:archive.add(ROOT/'scripts'/filename,arcname=filename)
+        archive.add(ROOT/'scripts/vpn_env.py', arcname='vpn_env.py')
+        environment = json.dumps(configured_values()).encode()
+        info = tarfile.TarInfo('vpn.env.json')
+        info.size, info.mode = len(environment), 0o600
+        archive.addfile(info, io.BytesIO(environment))
     stage='/opt/vpn-infra/staging/'+name+'/'+folder.name
     remote(name,f'sudo install -d -m 700 {stage} && sudo tar xzf - -C {stage}',stream.getvalue())
     return stage
@@ -51,14 +58,14 @@ def backup(name):
 def deploy_node(name):
     n=node(name); inv=inventory();release=json.loads((ROOT/'monitoring/releases.json').read_text())['node_exporter']
     stage=upload(name,ROOT/'.local/rendered/nodes'/name,['install_node.sh'])
-    address='127.0.0.1' if name==inv['entry']['name'] else '0.0.0.0'
+    address=env_value('VPN_LOOPBACK_IP') if name==inv['entry']['name'] else env_value('VPN_BIND_IP')
     remote(name,'sudo bash '+shlex.join([stage+'/install_node.sh',stage+'/payload',f'{address}:{inv["monitoring"]["node_port"]}',release['version'],release['sha256_linux_amd64']]))
 
 def deploy_monitoring():
     name=inventory()['entry']['name']
     stage=upload(name,ROOT/'.local/rendered/monitoring',['install_monitoring.sh','rename_grafana_user.py'])
     # Fresh installations have no existing account to migrate.
-    remote(name,'if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then sudo python3 '+shlex.join([stage+'/rename_grafana_user.py',stage+'/payload'])+'; fi')
+    remote(name,env_expand('if curl -fsS http://${VPN_LOOPBACK_IP}:${VPN_GRAFANA_PORT}/api/health >/dev/null 2>&1; then sudo python3 ')+shlex.join([stage+'/rename_grafana_user.py',stage+'/payload'])+'; fi')
     remote(name,'sudo bash '+shlex.join([stage+'/install_monitoring.sh',stage+'/payload']))
 
 def refresh_grafana():
@@ -162,7 +169,7 @@ def stage_failover():
     from failover_variant import private_outbound_file
     import tempfile
     raw=INVENTORY.read_bytes()
-    inv=json.loads(raw)
+    inv=load_json(INVENTORY)
     with tempfile.TemporaryDirectory(prefix='failover-deploy-',dir=ROOT/'.local') as tmp:
         folder=Path(tmp)
         (folder/'hosts.json').write_bytes(raw)
@@ -190,12 +197,14 @@ def deploy_auto_onboarding():
     name = inventory()['entry']['name']
     with tempfile.TemporaryDirectory(prefix='auto-onboarding-', dir=ROOT / '.local') as tmp:
         stage = upload(name, Path(tmp), ['install_auto_tls_frontend.py', 'verify_auto_onboarding.py',
-                                         'install_failover_subscription.py', 'failover_subscription.py'])
+                                         'install_failover_subscription.py', 'failover_subscription.py',
+                                         'install_telegram_forwarders.py'])
         try:
             actions = [
                 ['python3', '-B', f'{stage}/install_auto_tls_frontend.py', 'install'],
+                ['python3', '-B', f'{stage}/install_telegram_forwarders.py', 'install', '--component', 'auto'],
                 ['python3', '-B', f'{stage}/verify_auto_onboarding.py'],
-                ['python3', '-B', f'{stage}/install_failover_subscription.py', 'upgrade'],
+                ['python3', '-B', f'{stage}/install_failover_subscription.py', 'upgrade', '--allow-profile-update'],
             ]
             command = ' && '.join(shlex.join(action) for action in actions)
             remote(name, 'sudo ' + shlex.join([
@@ -209,6 +218,7 @@ def deploy_xray_subscriptions():
 
     name = inventory()['entry']['name']
     helpers = ['install_xray_tls_frontends.py', 'install_auto_tls_frontend.py',
+               'install_telegram_forwarders.py',
                'xray_subscription_hosts.py', 'verify_xray_subscriptions.py',
                'verify_xray_vless.py', 'compatible_vless.py', 'compatible_profiles.py',
                'verify_auto_onboarding.py', 'failover_subscription.py', 'install_failover_subscription.py']
@@ -227,8 +237,10 @@ def check(name, *arguments):
     subprocess.run([sys.executable, '-B', str(stage / name), *arguments], check=True, timeout=180)
 
 frontend.install()
+check('install_auto_tls_frontend.py', 'install')
+check('install_telegram_forwarders.py', 'install', '--component', 'auto')
 check('verify_xray_subscriptions.py', '--candidate-tls')
-print(json.dumps(subscription.upgrade(stage / 'failover_subscription.py')), flush=True)
+print(json.dumps(subscription.upgrade(stage / 'failover_subscription.py', allow_profile_update=True)), flush=True)
 published = hosts.apply(hosts.DATABASE, ipaddress.IPv4Address(frontend.ADDRESS), hosts.BACKUPS)
 print(json.dumps(published), flush=True)
 try:
@@ -277,7 +289,7 @@ def deploy_mtproto():
             or not re.fullmatch(r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+'
                                 r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', domain)):
         raise ValueError('The FakeTLS secret must contain a valid cover domain')
-    fields = {'server': entry['address'], 'port': PORT, 'secret': secret}
+    fields = {'server': entry['address'], 'port': env_port('VPN_MTPROTO_PUBLIC_PORT'), 'secret': secret}
     query = urllib.parse.urlencode(fields)
     access = dict(fields, domain=domain, tg_url='tg://proxy?' + query, web_url='https://t.me/proxy?' + query)
     access_file.write_text(json.dumps(access, indent=2) + '\n')
@@ -306,7 +318,7 @@ def deploy_mtproto():
                 ['python3', '-B', stage + '/install_mtproto.py', 'install',
                  '--archive', stage + '/payload/' + ARCHIVE_NAME,
                  '--secrets-file', stage + '/payload/access.json'],
-                ['python3', '-B', stage + '/verify_mtproto.py', '--host', '127.0.0.1', '--port', str(PORT),
+                ['python3', '-B', stage + '/verify_mtproto.py', '--host', env_value('VPN_LOOPBACK_IP'), '--port', str(PORT),
                  '--config', '/etc/vpn-mtproto/config.toml', '--dc', '2'],
             ]
             remote(entry['name'], 'sudo ' + shlex.join([
@@ -321,10 +333,51 @@ def deploy_mtproto():
     (private / 'access.md').write_text(
         '# Telegram MTProto\n\n' + f"[Подключить Telegram]({access['web_url']})\n\n"
         + f"[Открыть в приложении]({access['tg_url']})\n\n"
-        + f"Сервер `{entry['address']}`, порт `{PORT}`, секрет `{secret}`.\n"
+        + f"Сервер `{entry['address']}`, порт `{access['port']}`, секрет `{secret}`.\n"
     )
     (private / 'access.md').chmod(0o600)
+    deploy_telegram_socks()
     print('MTProto installed and verified; connection links saved privately in .local/mtproto/access.md')
+
+def deploy_telegram_socks():
+    import secrets
+    import tempfile
+    import urllib.parse
+
+    entry = inventory()['entry']
+    private = ROOT / '.local/telegram-socks'
+    private.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = private / 'access.json'
+    access = json.loads(path.read_text()) if path.exists() else {}
+    access['username'] = (os.environ.get('VPN_TELEGRAM_SOCKS_USERNAME') or access.get('username')
+                          or 'tg_' + secrets.token_hex(4))
+    access['password'] = (os.environ.get('VPN_TELEGRAM_SOCKS_PASSWORD') or access.get('password')
+                          or secrets.token_urlsafe(30))
+    access.update(server=entry['address'], port=env_port('VPN_TELEGRAM_SOCKS_PORT'))
+    query = urllib.parse.urlencode({'server': access['server'], 'port': access['port'],
+                                    'user': access['username'], 'pass': access['password']})
+    access.update(web_url='https://t.me/socks?' + query, tg_url='tg://socks?' + query)
+    path.write_text(json.dumps(access, indent=2) + '\n')
+    path.chmod(0o600)
+    with tempfile.TemporaryDirectory(prefix='telegram-socks-', dir=ROOT / '.local') as tmp:
+        folder = Path(tmp)
+        (folder / 'access.json').write_text(json.dumps(access))
+        (folder / 'access.json').chmod(0o600)
+        stage = upload(entry['name'], folder, ['install_telegram_socks.py', 'verify_mtproto.py'])
+        try:
+            remote(entry['name'], 'sudo python3 -B ' + shlex.join([
+                stage + '/install_telegram_socks.py', 'install', '--secrets-file', stage + '/payload/access.json']))
+            remote(entry['name'], 'sudo python3 -B ' + shlex.join([
+                stage + '/verify_mtproto.py', '--host', env_value('VPN_LOOPBACK_IP'),
+                '--port', str(env_port('VPN_MTPROTO_PUBLIC_PORT')), '--config', '/etc/vpn-mtproto/config.toml']))
+            config = remote(entry['name'], 'sudo cat /etc/vpn-telegram-socks/config.json', capture=True).stdout
+            (private / 'config.json').write_bytes(config)
+            (private / 'config.json').chmod(0o600)
+        finally:
+            remote(entry['name'], 'sudo rm -rf -- ' + shlex.quote(stage))
+    (private / 'access.md').write_text('# Telegram SOCKS5\n\n[Подключить](' + access['web_url'] + ')\n')
+    (private / 'access.md').chmod(0o600)
+    print('Telegram SOCKS5 credentials saved privately in .local/telegram-socks/access.md')
 
 def refresh_failover_monitoring():
     import shutil
@@ -339,7 +392,7 @@ def refresh_failover_monitoring():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','deploy-mtproto','refresh-failover-monitoring','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','deploy-mtproto','deploy-telegram-socks','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
@@ -361,11 +414,12 @@ def main():
     elif args.command=='deploy-auto-onboarding':deploy_auto_onboarding()
     elif args.command=='deploy-xray-subscriptions':deploy_xray_subscriptions()
     elif args.command=='deploy-mtproto':deploy_mtproto()
+    elif args.command=='deploy-telegram-socks':deploy_telegram_socks()
     elif args.command=='refresh-failover-monitoring':refresh_failover_monitoring()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)
     elif args.command=='tunnel':
         cmd=ssh_args(inventory()['entry']['name'])
-        cmd[-1:-1]=['-N','-o','ExitOnForwardFailure=yes','-L','127.0.0.1:3000:127.0.0.1:3000','-L','127.0.0.1:9090:127.0.0.1:9090','-L','127.0.0.1:9093:127.0.0.1:9093']
+        cmd[-1:-1]=['-N','-o','ExitOnForwardFailure=yes','-L',env_expand('${VPN_LOOPBACK_IP}:${VPN_GRAFANA_PORT}:${VPN_LOOPBACK_IP}:${VPN_GRAFANA_PORT}'),'-L',env_expand('${VPN_LOOPBACK_IP}:${VPN_PROMETHEUS_PORT}:${VPN_LOOPBACK_IP}:${VPN_PROMETHEUS_PORT}'),'-L',env_expand('${VPN_LOOPBACK_IP}:${VPN_ALERTMANAGER_PORT}:${VPN_LOOPBACK_IP}:${VPN_ALERTMANAGER_PORT}')]
         subprocess.run(cmd,check=True)
 
 if __name__=='__main__':main()

@@ -452,6 +452,10 @@ def deploy_telegram_socks():
     (private / 'access.md').chmod(0o600)
     print('Telegram SOCKS5 credentials saved privately in .local/telegram-socks/access.md')
 
+def deploy_web_proxy():
+    from deploy_web_proxy import deploy
+    print(json.dumps(deploy()))
+
 def refresh_failover_monitoring():
     import shutil
     folder=ROOT/'.local/failover-monitoring'
@@ -465,7 +469,7 @@ def refresh_failover_monitoring():
 def main():
     os.umask(0o077)
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','deploy-mtproto','deploy-mtproto-dd','deploy-telegram-socks','deploy-telegram-local','refresh-failover-monitoring','ssh','tunnel'])
+    parser.add_argument('command',choices=['backup','deploy-node','deploy-monitoring','refresh-grafana','deploy-grafana-https','deploy-vpn-usage','refresh-alertmanager','refresh-probes','deploy-balancer','activate-balancer','migrate-direct-inbounds','update-pool','update-failover-pool','deploy-compatible','publish-compatible','stage-failover','deploy-auto-onboarding','deploy-xray-subscriptions','deploy-mtproto','deploy-mtproto-dd','deploy-telegram-socks','deploy-telegram-reserve','deploy-web-proxy','deploy-telegram-local','refresh-failover-monitoring','ssh','tunnel'])
     parser.add_argument('name',nargs='?',default='entry')
     args=parser.parse_args()
     if args.command=='backup':backup(args.name)
@@ -489,6 +493,8 @@ def main():
     elif args.command=='deploy-mtproto':deploy_mtproto()
     elif args.command=='deploy-mtproto-dd':deploy_mtproto_dd()
     elif args.command=='deploy-telegram-socks':deploy_telegram_socks()
+    elif args.command=='deploy-telegram-reserve':subprocess.run([sys.executable, str(ROOT/'scripts/deploy_telegram_reserve.py')], check=True)
+    elif args.command=='deploy-web-proxy':deploy_web_proxy()
     elif args.command=='deploy-telegram-local':subprocess.run([sys.executable, str(ROOT/'scripts/deploy_telegram_local.py')], check=True)
     elif args.command=='refresh-failover-monitoring':refresh_failover_monitoring()
     elif args.command=='ssh':subprocess.run(ssh_args(args.name),check=True)

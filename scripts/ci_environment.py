@@ -78,6 +78,12 @@ def local_secrets():
         socks_access = json.loads(socks.read_text())
         values['VPN_TELEGRAM_SOCKS_USERNAME'] = socks_access['username']
         values['VPN_TELEGRAM_SOCKS_PASSWORD'] = socks_access['password']
+    web = ROOT / '.local/web-proxy/credentials.json'
+    if web.exists():
+        values['VPN_WEB_PROXY_CREDENTIALS_JSON'] = web.read_text()
+    reserve = ROOT / '.local/telegram-reserve/nl/credentials.json'
+    if reserve.exists():
+        values['VPN_TELEGRAM_RESERVE_CREDENTIALS_JSON'] = reserve.read_text()
     for name, value in values.items():
         if not value or len(value.encode()) >= 48 * 1024:
             raise ValueError(name + ' is empty or exceeds the GitHub secret size limit')
@@ -121,7 +127,8 @@ def hydrate():
             raise ValueError('Required GitHub Secret is missing: ' + name)
     # Structured secrets must mask their nested values too, before subprocesses
     # can emit errors. No environment dumps, caches or credential artifacts.
-    for name in SECRET_NAMES + ('VPN_ALERTMANAGER_CONFIG',):
+    for name in SECRET_NAMES + ('VPN_ALERTMANAGER_CONFIG', 'VPN_WEB_PROXY_CREDENTIALS_JSON',
+                                'VPN_TELEGRAM_RESERVE_CREDENTIALS_JSON'):
         value = os.environ.get(name, '')
         if os.environ.get('GITHUB_ACTIONS') == 'true':
             mask_values(value)

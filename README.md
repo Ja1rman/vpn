@@ -37,7 +37,7 @@ flowchart LR
 
 **Доступны две подписки.** Обычная подписка использует три транспорта NL-сервера, затем независимые резервы `ihor` и `srv-41969`. Отдельная подписка **VPN Auto** выдаёт один профиль с очередью `ihor → breeze-reef → srv-41969` и прямым выходом для российских доменов. [Как выдать подписку новому пользователю](docs/create-user-subscriptions.md) · [Ссылка, порядок и откат](docs/two-subscriptions.md) · [Как добавить сервер с ноутбука](docs/add-server-from-laptop.md).
 
-Для Telegram доступны **MTProto DD** на `${VPN_ENTRY_ADDRESS}:${VPN_MTPROTO_DD_PORT}` и прежний FakeTLS-вход на `${VPN_ENTRY_ADDRESS}:${VPN_MTPROTO_PUBLIC_PORT}` через тот же резервируемый пул VPN Auto. Ссылки находятся в закрытых `.local/mtproto-dd/access.md` и `.local/mtproto/access.md`. SOCKS5 с реквизитами `.local/telegram-socks/access.md` проверен поверх VPN; прямой SOCKS-запрос к Telegram в проверяемом внешнем пути не доходит до сервера. [Подключение, проверки и управление прокси](docs/telegram-mtproto.md).
+Для Telegram добавлены **MTProto DD/EE и SOCKS5** на стандартных TLS-входах основного и резервного хостов. Добавьте оба профиля и включите Auto-Switch Proxies в Telegram; готовые ссылки находятся в закрытой `.local/telegram-proxies/access.md`. MTProto прошёл настоящие Telegram RPC на обоих входах. SOCKS5 проходит внешний HTTPS и Telegram RPC на своих серверах, но Telegram-тест с ноутбука остаётся неуспешным. WEB-relay установлен на loopback и ожидает DNS для публичного HTTPS. Старые входы сохранены. [Инструкция и ограничения](docs/telegram-proxies.md), [исходная установка MTProto](docs/telegram-mtproto.md).
 
 Входной `${VPN_ENTRY_ADDRESS}` также остаётся единственной точкой входа. Чтобы пережить его полный отказ, нужны второй вход и поддерживающий автоматическое переключение клиентский профиль. Один WireGuard Endpoint сам по себе не переключается между серверами. Уже оборванные TCP-соединения при отказе выходного узла приложения устанавливают заново; время обнаружения зависит от проверки и сетевого тайм-аута, обычно десятки секунд.
 
@@ -280,7 +280,7 @@ sudo python3 /opt/vpn-infra/staging/entry/route-migration/migrate_direct_inbound
 ## Проверки и публикация в GitHub
 
 ```bash
-python3 -m unittest discover -s tests -v
+VPN_TEST_MODE=1 python3 -m unittest discover -s tests -v
 for script in scripts/*.sh; do bash -n "$script"; done
 ```
 

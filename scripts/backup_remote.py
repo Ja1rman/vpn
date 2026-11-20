@@ -23,6 +23,9 @@ with tempfile.TemporaryDirectory(prefix="vpn-backup-") as tmp:
         destination.close()
         source.close()
     paths = ["/usr/local/x-ui/bin/config.json", "/usr/local/x-ui/x-ui.sh", "/etc/default/x-ui", "/usr/bin/x-ui", '/etc/vpn-balancer', '/etc/vpn-compatible-vless', '/etc/vpn-failover', '/etc/vpn-failover-subscription', '/etc/vpn-auto-tls-frontend', '/opt/vpn-auto-tls-frontend', '/etc/vpn-xray-tls-frontends', '/opt/vpn-xray-tls-frontends', '/etc/vpn-mtproto', '/opt/vpn-mtproto', '/etc/vpn-mtproto-dd', '/opt/vpn-mtproto-dd', '/etc/vpn-telegram-socks', '/opt/vpn-telegram-socks', '/etc/vpn-infra', '/etc/vpn-node', '/etc/vpn-exit', '/etc/vpn-monitoring', '/etc/vpn-grafana-https', '/etc/vpn-usage', '/opt/vpn-usage', '/opt/vpn-infra/staging', '/root/.acme.sh']+certs
+    paths.extend(['/etc/vpn-telegram-web', '/opt/vpn-telegram-web', '/etc/vpn-telegram-web-tls',
+                  '/etc/vpn-telegram-reserve', '/opt/vpn-telegram-reserve',
+                  '/etc/vpn-tcp-demux', '/opt/vpn-tcp-demux'])
     def collect_cert_files(value):
         if isinstance(value,dict):
             for key,item in value.items():

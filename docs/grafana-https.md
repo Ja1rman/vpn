@@ -2,7 +2,7 @@
 
 Адрес HTTPS: `${VPN_GRAFANA_URL}`. Корень `/` перенаправляет в `/grafana/`. Grafana принимает те же логин и пароль, которые сохранены в `.local/access.md`.
 
-Отдельный контейнер `vpn-grafana-https` занимает только TCP `${VPN_MONITORING_HTTPS_PORT}`. Он передаёт запросы существующей Grafana на `${VPN_LOOPBACK_IP}:${VPN_GRAFANA_PORT}`. Порт `${VPN_MONITORING_HTTP_PORT}`, настройки самой Grafana, Prometheus, Alertmanager, подписки и VPN не меняются. На `${VPN_MONITORING_HTTPS_PORT}` доступны только маршруты Grafana. Для входа предпочтителен HTTPS.
+Отдельный контейнер `vpn-grafana-https` обслуживает TCP `${VPN_MONITORING_HTTPS_PORT}` и передаёт запросы Grafana на `${VPN_LOOPBACK_IP}:${VPN_GRAFANA_PORT}`. Настройки самой Grafana, Prometheus, Alertmanager, подписки и VPN сохраняются. Новые внешние соединения к этому порту проходят через отдельный классификатор Telegram; обычный TLS передаётся тому же nginx. После настройки DNS отдельный hostname server может обслуживать WEB-прокси с собственным сертификатом. IP-маршруты и сертификат Grafana сохраняются. См. [Telegram-прокси](telegram-proxies.md). Для входа предпочтителен HTTPS.
 
 Шаблон `monitoring/nginx-grafana-https.conf` переписывает канонические HTTP-ссылки, которые Grafana отдаёт в HTML, JSON и редиректах, на HTTPS. Статические файлы, API и WebSocket проходят по тому же пути. HTTPS-прокси добавляет флаг `Secure` к cookie; старый HTTP-фронт не меняется.
 
